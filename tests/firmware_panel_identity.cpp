@@ -24,6 +24,19 @@ int main(){
    if(!damaged)assert(p.panel.valid && p.panel.type==4 && PanelPower::nativePPS0(p,family));
   }
  }
+ // -wex-panel0 override: only for 0xFF with no identity match; a firmware
+ // panel index or a real EDID match always wins.
+ {
+  PanelFixture::Input f;f.vbt[f.options]=0xff;
+  auto p=parse(f.vbt.data(),f.vbt.size(),Family::AlderLakeP);assert(!p.panel.valid);
+  p=parse(f.vbt.data(),f.vbt.size(),Family::AlderLakeP,nullptr,4);assert(p.panel.valid && p.panel.type==4);
+  p=parse(f.vbt.data(),f.vbt.size(),Family::AlderLakeP,nullptr,16);assert(!p.panel.valid);
+  f.vbt[f.options]=4;p=parse(f.vbt.data(),f.vbt.size(),Family::AlderLakeP,nullptr,7);assert(p.panel.valid && p.panel.type==4);
+ }
+ {
+  PanelFixture::Input f(true,false);auto p=parse(f.vbt.data(),f.vbt.size(),Family::AlderLakeP,panelEDID(f.op.data(),f.op.size()),3);
+  assert(p.panel.valid && p.panel.type==9);
+ }
  for(bool ptr:{false,true})for(bool dup:{false,true}) {
   PanelFixture::Input f(ptr,dup);auto p=parseInput(f);
   assert(p.valid() && p.panel.valid && p.panel.type==9 && p.panel.pwmHz==209);
