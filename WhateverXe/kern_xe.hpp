@@ -125,6 +125,7 @@ private:
  static bool adlsPanelPWMTarget(void *controller,void *&access,void *&power);
  static bool adlsCapturePanelPWM(void *controller);
  static uint32_t wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void *timing);
+ static uint32_t wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing);
  static uint32_t wrapADLSPanelBacklight(void *controller,uint32_t brightness);
  static void wrapADLSPanelPWMEnable(void *access);
     mach_vm_address_t orgADLSPowerPG {};

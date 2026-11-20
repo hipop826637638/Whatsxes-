@@ -13840,7 +13840,7 @@ void XE::processNativePanel(KernelPatcher &patcher,size_t index,mach_vm_address_
      !memcmp(reinterpret_cast<void *>(lightFn),lightEntry,sizeof(lightEntry)) &&
      !memcmp(reinterpret_cast<void *>(brightnessFn),brightnessEntry,sizeof(brightnessEntry)) &&
      !memcmp(reinterpret_cast<void *>(address+0x507e9),enable,sizeof(enable));
-    KernelPatcher::RouteRequest routes[] {{light,wrapADLSLightUpEDP,orgADLSLightUpEDP},
+    KernelPatcher::RouteRequest routes[] {{light,wrapDisplay13EDPLightAudit,orgADLSLightUpEDP},
      {brightness,wrapADLSPanelBacklight,orgADLSPanelBacklight}};
     if(known && patcher.routeMultiple(index,routes,2,address,size)) {
      uint8_t bridge[]={0x48,0xb8,0,0,0,0,0,0,0,0,0xff,0xd0,0x90,0x90,0x90,0x90};
@@ -14010,6 +14010,38 @@ bool XE::adlsCapturePanelPWM(void *controller) {
   s->adlsPanelPWM=XELP::PanelPWM::select(period,control,period?0:read(0xC2014),p.pwmHz,p.activeLowPWM);
  }
  f.putPG(power,1);return s->adlsPanelPWM.valid();
+}
+// ASUS UX7602ZM diagnostic (read-only): record the mode handed to native
+// eDP light-up and the path fields later used for watermarks (+0x118 pixel
+// clock, +0x138 encoded HTOTAL, +0x3640 transcoder, +0x160/+0x164 link M/N),
+// then run the unchanged wrapper.
+uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing) {
+ auto s=callbackXE;
+ const bool edpAudit=s->display13FramebufferRequested && s->adlnOutputWiring.panel && path &&
+  static_cast<OSObject *>(path)->getMetaClass()->getClassSize()>=0x3730;
+ uint64_t audit[24] {};
+ if(edpAudit) {
+  audit[0]=1;audit[1]=timing!=nullptr;
+  if(timing) {
+   XELP::DSI::AppleAdapter::Timing t;memcpy(&t,timing,sizeof(t));
+   audit[2]=t.pixelClock;audit[3]=t.horizontalActive;audit[4]=t.horizontalBlanking;
+   audit[5]=t.verticalActive;audit[6]=t.verticalBlanking;audit[7]=t.bitsPerColorComponent;audit[8]=t.pixelEncoding;
+   audit[9]=t.minPixelClock;audit[10]=t.maxPixelClock;
+  }
+  audit[11]=Display13FBMemory::field<uint64_t>(path,0x118);audit[12]=Display13FBMemory::field<uint32_t>(path,0x138);
+  audit[13]=Display13FBMemory::field<uint32_t>(path,0x3640);
+ }
+ const auto result=wrapADLSLightUpEDP(controller,fb,path,timing);
+ if(edpAudit) {
+  audit[14]=result;audit[15]=Display13FBMemory::field<uint64_t>(path,0x118);
+  audit[16]=Display13FBMemory::field<uint32_t>(path,0x138);audit[17]=Display13FBMemory::field<uint32_t>(path,0x3640);
+  audit[18]=Display13FBMemory::field<uint32_t>(path,0x160);audit[19]=Display13FBMemory::field<uint32_t>(path,0x164);
+  audit[20]=display13FBPower.firstFaultLine;
+  auto root=IORegistryEntry::getRegistryRoot();
+  if(!root->getProperty("WEXLightUpEDPFirst"))root->setProperty("WEXLightUpEDPFirst",audit,sizeof(audit));
+  root->setProperty("WEXLightUpEDPLast",audit,sizeof(audit));
+ }
+ return result;
 }
 uint32_t XE::wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void *timing) {
  auto s=callbackXE;
