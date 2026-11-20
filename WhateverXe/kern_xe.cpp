@@ -9582,10 +9582,25 @@ void XE::wrapAlderLakeNPipeWMSetup(IOService *controller,IOService *fb,OSObject 
 		// true excludes the primary plane's extra downscale multiplier, as in
 		// the original pipe calculation (distinct from plane WM computation).
 		auto crtc=params ? params : reinterpret_cast<uint8_t *>(path)+0x128;
-		const auto htotal=((Display13FBMemory::field<uint32_t>(crtc,0x10)>>16)&0x3FFF)+1;
+		auto htotal=((Display13FBMemory::field<uint32_t>(crtc,0x10)>>16)&0x3FFF)+1;
 		auto adjust=reinterpret_cast<uint64_t (*)(void *,void *,void *,bool,void *)>(callbackXE->adlnAdjustPixelClock);
-		const auto pixel=adjust(controller,fb,path,true,crtc);
-		const auto value=Display13WM::pipeLineTime(htotal,pixel);
+		auto pixel=adjust(controller,fb,path,true,crtc);
+		auto value=Display13WM::pipeLineTime(htotal,pixel);
+		// Internal eDP (ASUS UX7602ZM, ATNA60YV02): the pending CRTC supplied
+		// at native panel light-up decodes to an impossible line time
+		// (htotal 15576, pixel 0xffffff003a0aede0 for a 3920/572 MHz mode).
+		// Recompute from the path's committed CRTC, the same source used when
+		// no pending CRTC is supplied, before treating it as a WM fault.
+		if(!value && params) {
+			auto committed=reinterpret_cast<uint8_t *>(path)+0x128;
+			const auto pendingHtotal=htotal;const auto pendingPixel=pixel;
+			htotal=((Display13FBMemory::field<uint32_t>(committed,0x10)>>16)&0x3FFF)+1;
+			pixel=adjust(controller,fb,path,true,committed);
+			value=Display13WM::pipeLineTime(htotal,pixel);
+			uint64_t fallback[] {1,pendingHtotal,pendingPixel,htotal,pixel,value};
+			IORegistryEntry::getRegistryRoot()->setProperty("WEXPipeWMFallback",fallback,sizeof(fallback));
+			if(value)*reinterpret_cast<uint32_t *>(committed+0x84)=value;
+		}
 		*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(crtc)+0x84)=value;
 		if(!value)adlnFault(c.watermarkFaulted,__LINE__);
 		record[1]=value;record[2]=htotal;record[3]=pixel;record[4]=params!=nullptr;
