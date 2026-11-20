@@ -14030,6 +14030,28 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   }
   audit[11]=Display13FBMemory::field<uint64_t>(path,0x118);audit[12]=Display13FBMemory::field<uint32_t>(path,0x138);
   audit[13]=Display13FBMemory::field<uint32_t>(path,0x3640);
+  // validateDisplayMode: detailed modes are OSData entries of fb+0x4260.
+  // Record each entry's size/pixel clock/active size and which entry, if
+  // any, the timing pointer handed to light-up points into.
+  uint64_t modes[2+16*4] {};
+  auto object=fb && static_cast<OSObject *>(fb)->getMetaClass()->getClassSize()>=0x4B90 ?
+   Display13FBMemory::field<OSObject *>(fb,0x4260) : nullptr;
+  auto array=OSDynamicCast(OSArray,object);
+  modes[0]=array?array->getCount():(object?0xFFFFFFFEULL:0xFFFFFFFFULL);modes[1]=UINT64_MAX;
+  for(unsigned i=0;array && i<array->getCount() && i<16;++i) {
+   auto data=OSDynamicCast(OSData,array->getObject(i));
+   const auto bytes=data?static_cast<const uint8_t *>(data->getBytesNoCopy()):nullptr;
+   const auto length=data?data->getLength():0;
+   modes[2+4*i]=data?length:UINT64_MAX;
+   if(bytes && length>=0x58) {
+    uint64_t clock;uint32_t h,v;memcpy(&clock,bytes+0x28,8);memcpy(&h,bytes+0x40,4);memcpy(&v,bytes+0x50,4);
+    modes[3+4*i]=clock;modes[4+4*i]=h;modes[5+4*i]=v;
+   }
+   const auto t=static_cast<const uint8_t *>(timing);
+   if(bytes && t && length>=0x58 && modes[1]==UINT64_MAX && !memcmp(bytes+0x28,t+0x28,8) && !memcmp(bytes+0x40,t+0x40,4))modes[1]=i;
+  }
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXLightUpEDPModes",modes,sizeof(modes));
+  if(object) {audit[21]=Display13FBMemory::field<uint32_t>(fb,0x4250);audit[22]=Display13FBMemory::field<uint32_t>(fb,0x4254);}
  }
  const auto result=wrapADLSLightUpEDP(controller,fb,path,timing);
  if(edpAudit) {
