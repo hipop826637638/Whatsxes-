@@ -70,6 +70,13 @@ void XE::captureFirmware(IOPCIDevice *pci,const XELP::Profile &profile) {
     pci->setProperty("WhateverXeFirmwarePorts",summary,sizeof(summary));
     pci->setProperty("WhateverXeFirmwareChecksum",firmwarePorts.checksum,32);
     pci->setProperty("WhateverXeFirmwarePortRecords",firmwarePorts.port,sizeof(firmwarePorts.port));
+    // Opt-in only: -wex-panel-aux drives an admitted internal panel through
+    // VESA DPCD brightness/enable (as for VBT interface 5) instead of PCH
+    // PWM. Some OLED panels report PWM in VBT but ignore the PWM signal.
+    if(firmwarePorts.panel.valid && checkKernelArgument("-wex-panel-aux")) {
+        firmwarePorts.panel.pwmPresent=false;
+        pci->setProperty("WEXPanelAUXOverride",1U,32);
+    }
     const auto &panel=firmwarePorts.panel;
     uint32_t panelFacts[]={panel.valid,panel.type,panel.ddi,panel.lowSwing,panel.hobl};
     pci->setProperty("WhateverXeFirmwarePanel",panelFacts,sizeof(panelFacts));
