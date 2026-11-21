@@ -14223,7 +14223,7 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
 void XE::display13PanelHDR(uint32_t brightness) {
  auto s=callbackXE;auto &c=display13FBPower;
  if(!s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map)return;
- static const bool requested=checkKernelArgument("-wex-panel-hdr");
+ const bool requested=checkKernelArgument("-wex-panel-hdr");
  const auto ddi=s->firmwarePorts.panel.ddi;
  auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
  if(!port)return;
