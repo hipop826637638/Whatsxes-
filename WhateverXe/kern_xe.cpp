@@ -7134,6 +7134,59 @@ uint32_t XE::wrapDisplay13TCLightUp(void *controller,void *rawFB,void *rawPath,c
     return result.status;
 }
 
+// ASUS UX7602ZM: on internal eDP, a native hwSetMode caller passes a timing
+// holding kernel pointers (pixel clock 0xffffff80..., HActive 0x9fcb3d59)
+// while the framebuffer's own detailed-mode table (fb+0x4260, OSData) holds
+// the correct EDID mode. Replace only an impossible timing, only with the
+// table entry validateDisplayMode would return for the current mode (or the
+// first plausible entry), and record the native caller offset.
+static bool display13TimingPlausible(const uint8_t *t) {
+    if(!t)return false;
+    uint64_t clock;uint32_t ha,hb,va,vb;
+    memcpy(&clock,t+0x28,8);memcpy(&ha,t+0x40,4);memcpy(&hb,t+0x44,4);memcpy(&va,t+0x50,4);memcpy(&vb,t+0x54,4);
+    return clock>=1000000 && clock<=2000000000ULL && ha && ha<=16384 && hb<=16384 && va && va<=16384 && vb<=16384;
+}
+static const uint8_t *display13TableTiming(void *fb,uint32_t &index) {
+    index=UINT32_MAX;
+    auto service=static_cast<OSObject *>(fb);
+    if(!service || service->getMetaClass()->getClassSize()<0x4B90)return nullptr;
+    auto array=OSDynamicCast(OSArray,Display13FBMemory::field<OSObject *>(fb,0x4260));
+    if(!array || !array->getCount())return nullptr;
+    const auto mode=Display13FBMemory::field<uint32_t>(fb,0x4250);
+    auto entry=[&](unsigned i)->const uint8_t * {
+        auto data=OSDynamicCast(OSData,array->getObject(i));
+        if(!data || data->getLength()<160)return nullptr;
+        auto bytes=static_cast<const uint8_t *>(data->getBytesNoCopy());
+        return display13TimingPlausible(bytes)?bytes:nullptr;
+    };
+    if(mode>=0x10000 && (mode&0x3FF)<array->getCount()) {
+        if(auto bytes=entry(mode&0x3FF)){index=mode&0x3FF;return bytes;}
+    }
+    for(unsigned i=0;i<array->getCount();++i)if(auto bytes=entry(i)){index=i;return bytes;}
+    return nullptr;
+}
+
+uint32_t XE::wrapDisplay13TCSetModeRepair(void *controller,void *fb,const void *timing) {
+    auto self=callbackXE;
+    uint8_t repaired[160];
+    if(self->adlnOutputWiring.panel && !display13TimingPlausible(static_cast<const uint8_t *>(timing))) {
+        uint32_t index=UINT32_MAX;
+        const auto source=display13TableTiming(fb,index);
+        uint64_t record[8] {1,uint64_t(reinterpret_cast<uintptr_t>(__builtin_return_address(0))-self->display13DPImage),
+            timing!=nullptr,source!=nullptr,index,0,0,source?Display13FBMemory::field<uint32_t>(fb,0x4250):UINT32_MAX};
+        if(timing)memcpy(&record[5],static_cast<const uint8_t *>(timing)+0x28,8);
+        if(source) {
+            memcpy(repaired,source,sizeof(repaired));
+            memcpy(&record[6],repaired+0x28,8);
+            timing=repaired;
+        }
+        auto root=IORegistryEntry::getRegistryRoot();
+        if(!root->getProperty("WEXSetModeTimingRepairFirst"))root->setProperty("WEXSetModeTimingRepairFirst",record,sizeof(record));
+        root->setProperty("WEXSetModeTimingRepairLast",record,sizeof(record));
+    }
+    return wrapDisplay13TCSetMode(controller,fb,timing);
+}
+
 uint32_t XE::wrapDisplay13TCSetMode(void *controller,void *fb,const void *timing) {
     auto self=callbackXE;
     // The GOP-preserving surface adapter must replace this refusal before
@@ -7189,7 +7242,7 @@ bool XE::processDisplay13FramebufferTC(KernelPatcher &patcher,size_t index,mach_
         {entries[Clocks].symbol,wrapDisplay13TCEnableClocks,orgDisplay13TCEnableClocks},
         {entries[DisableClocks].symbol,wrapDisplay13TCDisableClocks,orgDisplay13TCDisableClocks},
         {entries[LightUp].symbol,wrapDisplay13TCLightUp,orgDisplay13TCLightUp},
-        {entries[SetMode].symbol,wrapDisplay13TCSetMode,orgDisplay13TCSetMode},
+        {entries[SetMode].symbol,wrapDisplay13TCSetModeRepair,orgDisplay13TCSetMode},
         {entries[DPLightUp].symbol,wrapDisplay13DPLightUp,orgDisplay13DPLightUp},
         {entries[PhyGating].symbol,wrapDisplay13DPPhyGating,orgDisplay13DPPhyGating},
         {entries[LaneMask].symbol,wrapDisplay13DPLaneMask,orgDisplay13DPLaneMask},
@@ -9582,10 +9635,25 @@ void XE::wrapAlderLakeNPipeWMSetup(IOService *controller,IOService *fb,OSObject 
 		// true excludes the primary plane's extra downscale multiplier, as in
 		// the original pipe calculation (distinct from plane WM computation).
 		auto crtc=params ? params : reinterpret_cast<uint8_t *>(path)+0x128;
-		const auto htotal=((Display13FBMemory::field<uint32_t>(crtc,0x10)>>16)&0x3FFF)+1;
+		auto htotal=((Display13FBMemory::field<uint32_t>(crtc,0x10)>>16)&0x3FFF)+1;
 		auto adjust=reinterpret_cast<uint64_t (*)(void *,void *,void *,bool,void *)>(callbackXE->adlnAdjustPixelClock);
-		const auto pixel=adjust(controller,fb,path,true,crtc);
-		const auto value=Display13WM::pipeLineTime(htotal,pixel);
+		auto pixel=adjust(controller,fb,path,true,crtc);
+		auto value=Display13WM::pipeLineTime(htotal,pixel);
+		// Internal eDP (ASUS UX7602ZM, ATNA60YV02): the pending CRTC supplied
+		// at native panel light-up decodes to an impossible line time
+		// (htotal 15576, pixel 0xffffff003a0aede0 for a 3920/572 MHz mode).
+		// Recompute from the path's committed CRTC, the same source used when
+		// no pending CRTC is supplied, before treating it as a WM fault.
+		if(!value && params) {
+			auto committed=reinterpret_cast<uint8_t *>(path)+0x128;
+			const auto pendingHtotal=htotal;const auto pendingPixel=pixel;
+			htotal=((Display13FBMemory::field<uint32_t>(committed,0x10)>>16)&0x3FFF)+1;
+			pixel=adjust(controller,fb,path,true,committed);
+			value=Display13WM::pipeLineTime(htotal,pixel);
+			uint64_t fallback[] {1,pendingHtotal,pendingPixel,htotal,pixel,value};
+			IORegistryEntry::getRegistryRoot()->setProperty("WEXPipeWMFallback",fallback,sizeof(fallback));
+			if(value)*reinterpret_cast<uint32_t *>(committed+0x84)=value;
+		}
 		*reinterpret_cast<uint32_t *>(static_cast<uint8_t *>(crtc)+0x84)=value;
 		if(!value)adlnFault(c.watermarkFaulted,__LINE__);
 		record[1]=value;record[2]=htotal;record[3]=pixel;record[4]=params!=nullptr;
@@ -13825,8 +13893,8 @@ void XE::processNativePanel(KernelPatcher &patcher,size_t index,mach_vm_address_
      !memcmp(reinterpret_cast<void *>(lightFn),lightEntry,sizeof(lightEntry)) &&
      !memcmp(reinterpret_cast<void *>(brightnessFn),brightnessEntry,sizeof(brightnessEntry)) &&
      !memcmp(reinterpret_cast<void *>(address+0x507e9),enable,sizeof(enable));
-    KernelPatcher::RouteRequest routes[] {{light,wrapADLSLightUpEDP,orgADLSLightUpEDP},
-     {brightness,wrapADLSPanelBacklight,orgADLSPanelBacklight}};
+    KernelPatcher::RouteRequest routes[] {{light,wrapDisplay13EDPLightAudit,orgADLSLightUpEDP},
+     {brightness,wrapDisplay13BacklightAudit,orgADLSPanelBacklight}};
     if(known && patcher.routeMultiple(index,routes,2,address,size)) {
      uint8_t bridge[]={0x48,0xb8,0,0,0,0,0,0,0,0,0xff,0xd0,0x90,0x90,0x90,0x90};
      const auto handler=reinterpret_cast<uintptr_t>(wrapADLSPanelPWMEnable);memcpy(bridge+2,&handler,sizeof(handler));
@@ -13996,6 +14064,93 @@ bool XE::adlsCapturePanelPWM(void *controller) {
  }
  f.putPG(power,1);return s->adlsPanelPWM.valid();
 }
+// ASUS UX7602ZM diagnostic (read-only): record the mode handed to native
+// eDP light-up and the path fields later used for watermarks (+0x118 pixel
+// clock, +0x138 encoded HTOTAL, +0x3640 transcoder, +0x160/+0x164 link M/N),
+// then run the unchanged wrapper.
+uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing) {
+ auto s=callbackXE;
+ const bool edpAudit=s->display13FramebufferRequested && s->adlnOutputWiring.panel && path &&
+  static_cast<OSObject *>(path)->getMetaClass()->getClassSize()>=0x3730;
+ uint64_t audit[24] {};
+ if(edpAudit) {
+  audit[0]=1;audit[1]=timing!=nullptr;
+  if(timing) {
+   XELP::DSI::AppleAdapter::Timing t;memcpy(&t,timing,sizeof(t));
+   audit[2]=t.pixelClock;audit[3]=t.horizontalActive;audit[4]=t.horizontalBlanking;
+   audit[5]=t.verticalActive;audit[6]=t.verticalBlanking;audit[7]=t.bitsPerColorComponent;audit[8]=t.pixelEncoding;
+   audit[9]=t.minPixelClock;audit[10]=t.maxPixelClock;
+  }
+  audit[11]=Display13FBMemory::field<uint64_t>(path,0x118);audit[12]=Display13FBMemory::field<uint32_t>(path,0x138);
+  audit[13]=Display13FBMemory::field<uint32_t>(path,0x3640);
+  // validateDisplayMode: detailed modes are OSData entries of fb+0x4260.
+  // Record each entry's size/pixel clock/active size and which entry, if
+  // any, the timing pointer handed to light-up points into.
+  uint64_t modes[2+16*4] {};
+  auto object=fb && static_cast<OSObject *>(fb)->getMetaClass()->getClassSize()>=0x4B90 ?
+   Display13FBMemory::field<OSObject *>(fb,0x4260) : nullptr;
+  auto array=OSDynamicCast(OSArray,object);
+  modes[0]=array?array->getCount():(object?0xFFFFFFFEULL:0xFFFFFFFFULL);modes[1]=UINT64_MAX;
+  for(unsigned i=0;array && i<array->getCount() && i<16;++i) {
+   auto data=OSDynamicCast(OSData,array->getObject(i));
+   const auto bytes=data?static_cast<const uint8_t *>(data->getBytesNoCopy()):nullptr;
+   const auto length=data?data->getLength():0;
+   modes[2+4*i]=data?length:UINT64_MAX;
+   if(bytes && length>=0x58) {
+    uint64_t clock;uint32_t h,v;memcpy(&clock,bytes+0x28,8);memcpy(&h,bytes+0x40,4);memcpy(&v,bytes+0x50,4);
+    modes[3+4*i]=clock;modes[4+4*i]=h;modes[5+4*i]=v;
+   }
+   const auto t=static_cast<const uint8_t *>(timing);
+   if(bytes && t && length>=0x58 && modes[1]==UINT64_MAX && !memcmp(bytes+0x28,t+0x28,8) && !memcmp(bytes+0x40,t+0x40,4))modes[1]=i;
+  }
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXLightUpEDPModes",modes,sizeof(modes));
+  if(object) {audit[21]=Display13FBMemory::field<uint32_t>(fb,0x4250);audit[22]=Display13FBMemory::field<uint32_t>(fb,0x4254);}
+ }
+ const auto result=wrapADLSLightUpEDP(controller,fb,path,timing);
+ if(edpAudit) {
+  audit[14]=result;audit[15]=Display13FBMemory::field<uint64_t>(path,0x118);
+  audit[16]=Display13FBMemory::field<uint32_t>(path,0x138);audit[17]=Display13FBMemory::field<uint32_t>(path,0x3640);
+  audit[18]=Display13FBMemory::field<uint32_t>(path,0x160);audit[19]=Display13FBMemory::field<uint32_t>(path,0x164);
+  audit[20]=display13FBPower.firstFaultLine;
+  auto root=IORegistryEntry::getRegistryRoot();
+  if(!root->getProperty("WEXLightUpEDPFirst"))root->setProperty("WEXLightUpEDPFirst",audit,sizeof(audit));
+  root->setProperty("WEXLightUpEDPLast",audit,sizeof(audit));
+  // Read-only DPCD capability dump after a successful light-up (panel
+  // powered): base caps, VESA eDP backlight caps/controls, and the Intel
+  // HDR/OLED backlight capability block. Same power/AUX lease as the
+  // AUX brightness backend; no DPCD writes.
+  if(result==0 && !root->getProperty("WEXPanelDPCD")) {
+   auto &c=display13FBPower;
+   const auto ddi=s->firmwarePorts.panel.ddi;
+   auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+   uint8_t dpcd[16+3+5+8] {};uint32_t status[5] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,0};
+   bool pg=false,aux=false,powered=false;
+   if(port && c.lock) {
+    port->retain();
+    IOLockLock(c.lock);Display13FBPanelIO io{c.map};
+    pg=display13PanelPowerReference(true);
+    if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+    powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+    IOLockUnlock(c.lock);
+    if(aux && powered) {
+     status[0]=wrapDisplay13ReadAUX(port,0x000,dpcd,16);
+     status[1]=wrapDisplay13ReadAUX(port,0x700,dpcd+16,3);
+     status[2]=wrapDisplay13ReadAUX(port,0x720,dpcd+19,5);
+     status[3]=wrapDisplay13ReadAUX(port,0x340,dpcd+24,8);
+    }
+    IOLockLock(c.lock);Display13FBPanelIO done{c.map};
+    if(aux)c.bridge.putAUX(done,ddi);
+    if(pg)display13PanelPowerReference(false);
+    IOLockUnlock(c.lock);
+    port->release();
+   }
+   status[4]=(pg?1U:0U)|(aux?2U:0U)|(powered?4U:0U)|(port?8U:0U);
+   root->setProperty("WEXPanelDPCD",dpcd,sizeof(dpcd));
+   root->setProperty("WEXPanelDPCDStatus",status,sizeof(status));
+  }
+ }
+ return result;
+}
 uint32_t XE::wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void *timing) {
  auto s=callbackXE;
  if(s->display13FramebufferRequested && s->adlnOutputWiring.panel && !display13PanelCapture(controller))return kIOReturnNotReady;
@@ -14005,6 +14160,136 @@ uint32_t XE::wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void 
  }
  const auto result=FunctionCast(wrapADLSLightUpEDP,s->orgADLSLightUpEDP)(controller,fb,path,timing);
  if(s->display13FramebufferRequested && !display13PanelHealthy())return kIOReturnNotReady;
+ return result;
+}
+// ASUS UX7602ZM diagnostic (read-only): after native brightness updates,
+// snapshot the live eDP pipeline (transcoder A / pipe A / plane 1 / DDI A,
+// PPS, PSR, frame counter) and sink link/power/PSR state over AUX.
+void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map)return;
+ static const uint32_t regs[]={0x60400,0x70008,0x70180,0x7019C,0x70188,0x70190,0x64000,0x60540,0x60544,
+  0xC7200,0xC7204,0xC8250,0xC8254,0xC8258,0x60800,0x60840,0x45400,0x46140,0x70040,
+  // Colour pipeline: GAMMA_MODE, CSC_MODE, input/output CSC coefficients
+  // and offsets, legacy palette samples, PLANE_COLOR_CTL, PIPE_MISC, MSA,
+  // data/link M/N. A zero LUT or matrix yields a running but black pipe.
+  0x4A480,0x49028,0x49010,0x49014,0x49018,0x4901C,0x49020,0x49024,0x49030,0x49034,0x49038,0x49040,0x49044,0x49048,
+  0x49050,0x49054,0x49058,0x4905C,0x49060,0x49064,0x49068,0x4906C,0x49070,0x49074,
+  0x4A000,0x4A004,0x4A200,0x4A3FC,0x701CC,0x70030,0x60410,0x60030,0x60034,0x60040,0x60044};
+ uint32_t mmio[2+arrsize(regs)+1] {1,brightness};
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ uint8_t dpcd[2+6+1+2+3] {};uint32_t status[6] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result};
+ uint64_t surface[5] {},ptes[8] {};
+ bool pg=false,aux=false,powered=false;
+ if(port)port->retain();
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  pg=display13PanelPowerReference(true);
+  if(pg) {
+   for(unsigned i=0;i<arrsize(regs);++i)mmio[2+i]=io.read(regs[i]);
+   IODelay(20000);mmio[2+arrsize(regs)]=io.read(0x70040);
+   // Scanout surface: SURF/SURFLIVE, cursor, and GGTT PTEs (BAR+8MiB,
+   // 8 bytes per 4 KiB) sampled across the 3840x2400x4 plane.
+   surface[0]=io.read(0x7019C);surface[1]=io.read(0x701AC);
+   surface[2]=io.read(0x70080);surface[3]=io.read(0x70084);surface[4]=io.read(0x70088);
+   const uint64_t base=surface[0]&~0xFFFULL;
+   for(unsigned k=0;k<8;++k) {
+    const uint64_t g=base+uint64_t(k)*(9000/8)*4096;
+    if(g+4096>0x100000000ULL)break;
+    const auto va=c.map->getVirtualAddress();
+    if(!va || c.map->getLength()<0x1000000)break;
+    ptes[k]=*reinterpret_cast<volatile uint64_t *>(va+0x800000+(g>>9));
+   }
+   if(port)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+  }
+  powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+ }
+ IOLockUnlock(c.lock);
+ if(aux && powered) {
+  status[0]=wrapDisplay13ReadAUX(port,0x100,dpcd,2);
+  status[1]=wrapDisplay13ReadAUX(port,0x202,dpcd+2,6);
+  status[2]=wrapDisplay13ReadAUX(port,0x600,dpcd+8,1);
+  status[3]=wrapDisplay13ReadAUX(port,0x170,dpcd+9,2);
+  status[4]=wrapDisplay13ReadAUX(port,0x2008,dpcd+11,3);
+ }
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  if(aux)c.bridge.putAUX(io,ddi);
+  if(pg)display13PanelPowerReference(false);
+ }
+ IOLockUnlock(c.lock);
+ if(port)port->release();
+ auto root=IORegistryEntry::getRegistryRoot();
+ root->setProperty("WEXPanelLiveMMIO",mmio,sizeof(mmio));
+ root->setProperty("WEXPanelLiveDPCD",dpcd,sizeof(dpcd));
+ root->setProperty("WEXPanelLiveStatus",status,sizeof(status));
+ // PTE values only. Never dereference a PTE target: on ASUS UX7602ZM a
+ // read through a sampled PTE hung boot before networking.
+ uint64_t pages[5+8] {};
+ for(unsigned i=0;i<5;++i)pages[i]=surface[i];
+ for(unsigned k=0;k<8;++k)pages[5+k]=ptes[k];
+ root->setProperty("WEXPanelSurface",pages,sizeof(pages));
+}
+// Intel eDP HDR/OLED backlight interface (Linux v6.12
+// intel_dp_aux_backlight.c register facts; independent implementation).
+// Opt-in -wex-panel-hdr: when the TCON reports nits brightness (0x341 bit4)
+// and SDR brightness over AUX (0x342 bit0), set BRIGHTNESS_AUX_ENABLE in
+// GETSET_CTRL_PARAMS (0x344 bit4) and write the level in nits to
+// 0x354/0x355. Without the flag the block is only read.
+void XE::display13PanelHDR(uint32_t brightness) {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map)return;
+ const bool requested=checkKernelArgument("-wex-panel-hdr");
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ if(!port)return;
+ uint8_t before[24] {},after[24] {};uint32_t status[8] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,0,brightness,0};
+ bool pg=false,aux=false,powered=false;
+ port->retain();
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  pg=display13PanelPowerReference(true);
+  if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+  powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+ }
+ IOLockUnlock(c.lock);
+ if(aux && powered) {
+  status[0]=wrapDisplay13ReadAUX(port,0x340,before,sizeof(before));
+  const bool capable=!status[0] && before[0]>=1 && (before[1]&0x10) && (before[2]&0x01);
+  if(requested && capable) {
+   uint8_t ctrl=uint8_t(before[4]|0x10);
+   status[1]=wrapDisplay13WriteAUX(port,0x344,&ctrl,1);
+   const uint32_t nits=5+uint32_t(uint64_t(brightness>65535?65535:brightness)*395/65535);
+   uint8_t level[2]={uint8_t(nits),uint8_t(nits>>8)};
+   status[2]=wrapDisplay13WriteAUX(port,0x354,level,2);
+   status[7]=nits;
+  }
+  status[3]=wrapDisplay13ReadAUX(port,0x340,after,sizeof(after));
+  status[4]=capable;
+ }
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  if(aux)c.bridge.putAUX(io,ddi);
+  if(pg)display13PanelPowerReference(false);
+ }
+ IOLockUnlock(c.lock);
+ port->release();
+ status[5]=(pg?1U:0U)|(aux?2U:0U)|(powered?4U:0U)|(requested?8U:0U);
+ auto root=IORegistryEntry::getRegistryRoot();
+ if(!root->getProperty("WEXPanelHDRFirst"))root->setProperty("WEXPanelHDRFirst",before,sizeof(before));
+ root->setProperty("WEXPanelHDRBefore",before,sizeof(before));
+ root->setProperty("WEXPanelHDRAfter",after,sizeof(after));
+ root->setProperty("WEXPanelHDRStatus",status,sizeof(status));
+}
+uint32_t XE::wrapDisplay13BacklightAudit(void *controller,uint32_t brightness) {
+ const auto result=wrapADLSPanelBacklight(controller,brightness);
+ display13PanelHDR(brightness);
+ display13PanelSnapshot(brightness,result);
  return result;
 }
 uint32_t XE::wrapADLSPanelBacklight(void *controller,uint32_t brightness) {

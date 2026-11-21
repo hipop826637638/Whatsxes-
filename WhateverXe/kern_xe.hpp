@@ -125,6 +125,10 @@ private:
  static bool adlsPanelPWMTarget(void *controller,void *&access,void *&power);
  static bool adlsCapturePanelPWM(void *controller);
  static uint32_t wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void *timing);
+ static uint32_t wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing);
+ static uint32_t wrapDisplay13BacklightAudit(void *controller,uint32_t brightness);
+ static void display13PanelSnapshot(uint32_t brightness,uint32_t result);
+ static void display13PanelHDR(uint32_t brightness);
  static uint32_t wrapADLSPanelBacklight(void *controller,uint32_t brightness);
  static void wrapADLSPanelPWMEnable(void *access);
     mach_vm_address_t orgADLSPowerPG {};
@@ -388,6 +392,7 @@ private:
  mach_vm_address_t orgDisplay13DPPhyGating {},orgDisplay13DPLaneMask {},orgDisplay13DPPortWrite {},display13DPImage {};
  static uint32_t wrapDisplay13TCLightUp(void *,void *,void *,const void *);
     static uint32_t wrapDisplay13TCSetMode(void *,void *,const void *);
+    static uint32_t wrapDisplay13TCSetModeRepair(void *,void *,const void *);
     bool processDisplay13FramebufferTC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static unsigned display13TCTarget(OSObject *,bool cleanup=false);
     static uint32_t wrapDisplay13TCMode(OSObject *,uint32_t);
