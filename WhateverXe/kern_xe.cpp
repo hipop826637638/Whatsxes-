@@ -13894,7 +13894,7 @@ void XE::processNativePanel(KernelPatcher &patcher,size_t index,mach_vm_address_
      !memcmp(reinterpret_cast<void *>(brightnessFn),brightnessEntry,sizeof(brightnessEntry)) &&
      !memcmp(reinterpret_cast<void *>(address+0x507e9),enable,sizeof(enable));
     KernelPatcher::RouteRequest routes[] {{light,wrapDisplay13EDPLightAudit,orgADLSLightUpEDP},
-     {brightness,wrapADLSPanelBacklight,orgADLSPanelBacklight}};
+     {brightness,wrapDisplay13BacklightAudit,orgADLSPanelBacklight}};
     if(known && patcher.routeMultiple(index,routes,2,address,size)) {
      uint8_t bridge[]={0x48,0xb8,0,0,0,0,0,0,0,0,0xff,0xd0,0x90,0x90,0x90,0x90};
      const auto handler=reinterpret_cast<uintptr_t>(wrapADLSPanelPWMEnable);memcpy(bridge+2,&handler,sizeof(handler));
@@ -14160,6 +14160,57 @@ uint32_t XE::wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void 
  }
  const auto result=FunctionCast(wrapADLSLightUpEDP,s->orgADLSLightUpEDP)(controller,fb,path,timing);
  if(s->display13FramebufferRequested && !display13PanelHealthy())return kIOReturnNotReady;
+ return result;
+}
+// ASUS UX7602ZM diagnostic (read-only): after native brightness updates,
+// snapshot the live eDP pipeline (transcoder A / pipe A / plane 1 / DDI A,
+// PPS, PSR, frame counter) and sink link/power/PSR state over AUX.
+void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map)return;
+ static const uint32_t regs[]={0x60400,0x70008,0x70180,0x7019C,0x70188,0x70190,0x64000,0x60540,0x60544,
+  0xC7200,0xC7204,0xC8250,0xC8254,0xC8258,0x60800,0x60840,0x45400,0x46140,0x70040};
+ uint32_t mmio[2+arrsize(regs)+1] {1,brightness};
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ uint8_t dpcd[2+6+1+2+3] {};uint32_t status[6] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result};
+ bool pg=false,aux=false,powered=false;
+ if(port)port->retain();
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  pg=display13PanelPowerReference(true);
+  if(pg) {
+   for(unsigned i=0;i<arrsize(regs);++i)mmio[2+i]=io.read(regs[i]);
+   IODelay(20000);mmio[2+arrsize(regs)]=io.read(0x70040);
+   if(port)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+  }
+  powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+ }
+ IOLockUnlock(c.lock);
+ if(aux && powered) {
+  status[0]=wrapDisplay13ReadAUX(port,0x100,dpcd,2);
+  status[1]=wrapDisplay13ReadAUX(port,0x202,dpcd+2,6);
+  status[2]=wrapDisplay13ReadAUX(port,0x600,dpcd+8,1);
+  status[3]=wrapDisplay13ReadAUX(port,0x170,dpcd+9,2);
+  status[4]=wrapDisplay13ReadAUX(port,0x2008,dpcd+11,3);
+ }
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  if(aux)c.bridge.putAUX(io,ddi);
+  if(pg)display13PanelPowerReference(false);
+ }
+ IOLockUnlock(c.lock);
+ if(port)port->release();
+ auto root=IORegistryEntry::getRegistryRoot();
+ root->setProperty("WEXPanelLiveMMIO",mmio,sizeof(mmio));
+ root->setProperty("WEXPanelLiveDPCD",dpcd,sizeof(dpcd));
+ root->setProperty("WEXPanelLiveStatus",status,sizeof(status));
+}
+uint32_t XE::wrapDisplay13BacklightAudit(void *controller,uint32_t brightness) {
+ const auto result=wrapADLSPanelBacklight(controller,brightness);
+ display13PanelSnapshot(brightness,result);
  return result;
 }
 uint32_t XE::wrapADLSPanelBacklight(void *controller,uint32_t brightness) {

@@ -56,6 +56,7 @@ struct XE {
  static bool adlsPanelPWMTarget(void*,void*&,void*&);static bool adlsCapturePanelPWM(void*);
  static uint32_t wrapADLSLightUpEDP(void*,void*,void*,const void*);static uint32_t wrapADLSPanelBacklight(void*,uint32_t);
  static uint32_t wrapDisplay13EDPLightAudit(void*,void*,void*,const void*);
+ static uint32_t wrapDisplay13BacklightAudit(void*,uint32_t);
  static void wrapADLSPanelPWMEnable(void*);
  static uint32_t wrapTGLRegisterRead(void*,unsigned long);static void wrapTGLRegisterWrite(void*,unsigned long,uint32_t);
  void install(KernelPatcher&patcher,unsigned index,uintptr_t address,size_t size){INSTALL}
