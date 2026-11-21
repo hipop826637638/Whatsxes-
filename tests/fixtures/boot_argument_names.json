@@ -152,5 +152,6 @@
   "-wex-panel0": [],
   "-wex-panel-aux": [],
   "-wex-panel-hdr": [],
-  "-wex-panel-8bpc": []
+  "-wex-panel-8bpc": [],
+  "-wex-panel-nodip": []
 }

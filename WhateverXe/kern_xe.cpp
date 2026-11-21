@@ -14075,6 +14075,7 @@ bool XE::adlsCapturePanelPWM(void *controller) {
 // WEX interrupt/vblank/flip counters. Ring of 64 x 12 words.
 static thread_call_t display13SamplerCall {};
 static uint32_t display13SamplerTicks {};
+static bool display13SamplerNoDIP {};
 static uint32_t display13SamplerRing[64*12] {};
 static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  auto &c=display13FBPower;auto &q=display13FBIRQ;
@@ -14082,7 +14083,12 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   const auto va=c.map->getVirtualAddress();
   auto rd=[&](uint32_t r)->uint32_t{return *reinterpret_cast<volatile uint32_t *>(va+r);};
   auto e=&display13SamplerRing[(display13SamplerTicks%64)*12];
-  e[0]=display13SamplerTicks;e[1]=rd(0x7019C);e[2]=rd(0x701AC);e[3]=rd(0x70180);
+  // e[3]: TRANS_VIDEO_DIP_CTL_A (0x60200) as found. Opt-in
+  // -wex-panel-nodip clears it (VSC/DRM/AVI/GMP/SPD packets), as the native
+  // disableDataIslandPackets does at shutdown, when the desktop showed.
+  const auto dip=rd(0x60200);
+  e[0]=display13SamplerTicks;e[1]=rd(0x7019C);e[2]=rd(0x701AC);e[3]=dip;
+  if(dip && dip!=UINT32_MAX && display13SamplerNoDIP)*reinterpret_cast<volatile uint32_t *>(va+0x60200)=0;
   e[4]=rd(0x70084);e[5]=rd(0x70088);e[6]=rd(0x70040);e[7]=rd(0x4440C);e[8]=rd(0x44404);
   e[9]=uint32_t(q.state.interrupts);e[10]=uint32_t(q.state.vblanks[0]);e[11]=uint32_t(q.state.flips[0]);
   uint32_t meta[2]={display13SamplerTicks+1,64};
@@ -14091,7 +14097,7 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   root->setProperty("WEXPanelSamplerMeta",meta,sizeof(meta));
  }
  if(++display13SamplerTicks<60 && display13SamplerCall) {
-  uint64_t deadline=0;clock_interval_to_deadline(5,kSecondScale,&deadline);
+  uint64_t deadline=0;clock_interval_to_deadline(display13SamplerTicks<6?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
 }
@@ -14147,6 +14153,7 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   // HDR/OLED backlight capability block. Same power/AUX lease as the
   // AUX brightness backend; no DPCD writes.
   if(result==0 && !display13SamplerCall) {
+   display13SamplerNoDIP=checkKernelArgument("-wex-panel-nodip");
    display13SamplerCall=thread_call_allocate(display13SamplerTick,nullptr);
    if(display13SamplerCall) {
     uint64_t deadline=0;clock_interval_to_deadline(5,kSecondScale,&deadline);
