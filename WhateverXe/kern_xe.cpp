@@ -14076,7 +14076,19 @@ bool XE::adlsCapturePanelPWM(void *controller) {
 static thread_call_t display13SamplerCall {};
 static uint32_t display13SamplerTicks {};
 static bool display13SamplerNoDIP {};
-static bool display13ProbeEnabled {},display13ProbeSaved {};static uint32_t display13ProbeStep {};static uint8_t display13ProbeBase[3] {};static uint64_t display13ProbeLastNs {};
+static bool display13ProbeEnabled {},display13ProbeSaved {};static uint8_t display13ProbeBase[3] {};
+static uint64_t display13ProbeStartNs {};
+static void (*display13ProbeTimedFn)() {};
+// -wex-panel-probe schedule: nothing for 60 s after light-up, then steps
+// 1..6 for 20 s each, then 7 (restore) and stop.
+static uint32_t display13ProbeCurrent() {
+ if(!display13ProbeStartNs)return 0;
+ uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);
+ const uint64_t elapsed=(ns-display13ProbeStartNs)/1000000000ULL;
+ if(elapsed<60)return 0;
+ const auto step=1+uint32_t((elapsed-60)/20);
+ return step>7?7:step;
+}
 static uint32_t display13SamplerRing[64*12] {};
 static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  auto &c=display13FBPower;auto &q=display13FBIRQ;
@@ -14097,7 +14109,8 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   root->setProperty("WEXPanelSampler",display13SamplerRing,sizeof(display13SamplerRing));
   root->setProperty("WEXPanelSamplerMeta",meta,sizeof(meta));
  }
- if(++display13SamplerTicks<60 && display13SamplerCall) {
+ if(display13ProbeTimedFn)display13ProbeTimedFn();
+ if(++display13SamplerTicks<(display13ProbeEnabled?120U:60U) && display13SamplerCall) {
   uint64_t deadline=0;clock_interval_to_deadline(display13SamplerTicks<6?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
@@ -14156,6 +14169,7 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   if(result==0 && !display13SamplerCall) {
    display13SamplerNoDIP=checkKernelArgument("-wex-panel-nodip");
    display13ProbeEnabled=checkKernelArgument("-wex-panel-probe");
+   if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
    display13SamplerCall=thread_call_allocate(display13SamplerTick,nullptr);
    if(display13SamplerCall) {
     uint64_t deadline=0;clock_interval_to_deadline(5,kSecondScale,&deadline);
@@ -14265,41 +14279,7 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
   status[6]=wrapDisplay13ReadAUX(port,0x200,dpcd+23,2);
   status[7]=wrapDisplay13ReadAUX(port,0x210,dpcd+25,8);
   wrapDisplay13ReadAUX(port,0x246,dpcd+33,1);
-  // Opt-in -wex-panel-probe: each native brightness call (e.g. ~/bright)
-  // applies the next panel-state experiment, then holds it until the next
-  // call. Every step first restores the values read on the first call.
-  //  1: 0x720=00 (VESA backlight enable off)
-  //  2: 0x344=00 (Intel HDR AUX brightness off)
-  //  3: 0x721=01 (VESA brightness mode back to preset)
-  //  4: 0x354..0x357 = 512 nits, 4-byte write (Linux HDR form)
-  //  5: step 4 + 0x344 |= 0x80 (SDP override AUX)
-  //  6: 0x720=00, 0x344=00, 0x721=01 together
-  //  7: everything restored
-  if(display13ProbeEnabled) {
-   uint8_t now[3] {};
-   wrapDisplay13ReadAUX(port,0x720,&now[0],1);wrapDisplay13ReadAUX(port,0x721,&now[1],1);wrapDisplay13ReadAUX(port,0x344,&now[2],1);
-   if(!display13ProbeSaved){memcpy(display13ProbeBase,now,3);display13ProbeSaved=true;}
-   // A single ~/bright or boot restore fades through many native calls.
-   // Advance only after 3 s without an advance; otherwise re-apply.
-   uint64_t nowNs=0;{uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&nowNs);}
-   if(!display13ProbeLastNs || nowNs-display13ProbeLastNs>3000000000ULL){++display13ProbeStep;display13ProbeLastNs=nowNs;}
-   const auto step=display13ProbeStep;
-   uint8_t v720=display13ProbeBase[0],v721=display13ProbeBase[1],v344=display13ProbeBase[2];
-   if(step==1||step==6)v720=0;
-   if(step==2||step==6)v344=0;
-   if(step==3||step==6)v721=1;
-   if(step==5)v344=uint8_t(v344|0x80);
-   uint32_t w[4] {};
-   w[0]=wrapDisplay13WriteAUX(port,0x720,&v720,1);
-   w[1]=wrapDisplay13WriteAUX(port,0x721,&v721,1);
-   w[2]=wrapDisplay13WriteAUX(port,0x344,&v344,1);
-   if(step==4||step==5){uint8_t nits[4]={0x00,0x02,0x00,0x00};w[3]=wrapDisplay13WriteAUX(port,0x354,nits,4);}
-   uint8_t after[3] {};
-   wrapDisplay13ReadAUX(port,0x720,&after[0],1);wrapDisplay13ReadAUX(port,0x721,&after[1],1);wrapDisplay13ReadAUX(port,0x344,&after[2],1);
-   uint32_t rec[12]={step,display13ProbeBase[0],display13ProbeBase[1],display13ProbeBase[2],v720,v721,v344,
-    after[0],after[1],after[2],w[0]|w[1]|w[2],w[3]};
-   IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelProbe",rec,sizeof(rec));
-  }
+  if(display13ProbeEnabled)display13PanelProbeApply(port,display13ProbeCurrent());
   // Sink CRC of the received frame (TEST_SINK 0x270 bit0, TEST_CRC_R/G/B
   // 0x240-0x245, count in 0x246 bits 3:0): two captures 500 ms apart. A
   // fixed CRC while the cursor/desktop changes means black/static content.
@@ -14404,6 +14384,59 @@ void XE::display13PanelHDR(uint32_t brightness) {
  root->setProperty("WEXPanelHDRBefore",before,sizeof(before));
  root->setProperty("WEXPanelHDRAfter",after,sizeof(after));
  root->setProperty("WEXPanelHDRStatus",status,sizeof(status));
+}
+// Applies probe step to the panel; caller holds the PG/AUX lease.
+//  0: nothing  1: 0x720=00  2: 0x344=00  3: 0x721=01
+//  4: 512 nits 4-byte HDR write  5: 4 + 0x344|=0x80  6: 1+2+3  7: restore
+void XE::display13PanelProbeApply(void *port,uint32_t step) {
+ if(!port || !step)return;
+ uint8_t now[3] {};
+ wrapDisplay13ReadAUX(port,0x720,&now[0],1);wrapDisplay13ReadAUX(port,0x721,&now[1],1);wrapDisplay13ReadAUX(port,0x344,&now[2],1);
+ if(!display13ProbeSaved){memcpy(display13ProbeBase,now,3);display13ProbeSaved=true;}
+ uint8_t v720=display13ProbeBase[0],v721=display13ProbeBase[1],v344=display13ProbeBase[2];
+ if(step==1||step==6)v720=0;
+ if(step==2||step==6)v344=0;
+ if(step==3||step==6)v721=1;
+ if(step==5)v344=uint8_t(v344|0x80);
+ uint32_t w[4] {};
+ w[0]=wrapDisplay13WriteAUX(port,0x720,&v720,1);
+ w[1]=wrapDisplay13WriteAUX(port,0x721,&v721,1);
+ w[2]=wrapDisplay13WriteAUX(port,0x344,&v344,1);
+ if(step==4||step==5){uint8_t nits[4]={0x00,0x02,0x00,0x00};w[3]=wrapDisplay13WriteAUX(port,0x354,nits,4);}
+ uint8_t after[3] {};
+ wrapDisplay13ReadAUX(port,0x720,&after[0],1);wrapDisplay13ReadAUX(port,0x721,&after[1],1);wrapDisplay13ReadAUX(port,0x344,&after[2],1);
+ uint32_t rec[12]={step,display13ProbeBase[0],display13ProbeBase[1],display13ProbeBase[2],v720,v721,v344,
+  after[0],after[1],after[2],w[0]|w[1]|w[2],w[3]};
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelProbe",rec,sizeof(rec));
+}
+// Sampler-driven probe: take the same PG/AUX lease as the snapshot and
+// apply the scheduled step, so automatic brightness cannot undo it.
+void XE::display13PanelProbeTimed() {
+ auto s=callbackXE;auto &c=display13FBPower;
+ const auto step=display13ProbeCurrent();
+ if(!step || !s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map)return;
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ if(!port)return;
+ bool pg=false,aux=false,powered=false;
+ port->retain();
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  pg=display13PanelPowerReference(true);
+  if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+  powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+ }
+ IOLockUnlock(c.lock);
+ if(aux && powered)display13PanelProbeApply(port,step);
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  if(aux)c.bridge.putAUX(io,ddi);
+  if(pg)display13PanelPowerReference(false);
+ }
+ IOLockUnlock(c.lock);
+ port->release();
 }
 uint32_t XE::wrapDisplay13BacklightAudit(void *controller,uint32_t brightness) {
  const auto result=wrapADLSPanelBacklight(controller,brightness);
