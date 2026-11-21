@@ -14214,8 +14214,62 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  root->setProperty("WEXPanelLiveDPCD",dpcd,sizeof(dpcd));
  root->setProperty("WEXPanelLiveStatus",status,sizeof(status));
 }
+// Intel eDP HDR/OLED backlight interface (Linux v6.12
+// intel_dp_aux_backlight.c register facts; independent implementation).
+// Opt-in -wex-panel-hdr: when the TCON reports nits brightness (0x341 bit4)
+// and SDR brightness over AUX (0x342 bit0), set BRIGHTNESS_AUX_ENABLE in
+// GETSET_CTRL_PARAMS (0x344 bit4) and write the level in nits to
+// 0x354/0x355. Without the flag the block is only read.
+void XE::display13PanelHDR(uint32_t brightness) {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map)return;
+ static const bool requested=checkKernelArgument("-wex-panel-hdr");
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ if(!port)return;
+ uint8_t before[24] {},after[24] {};uint32_t status[8] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,0,brightness,0};
+ bool pg=false,aux=false,powered=false;
+ port->retain();
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  pg=display13PanelPowerReference(true);
+  if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+  powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+ }
+ IOLockUnlock(c.lock);
+ if(aux && powered) {
+  status[0]=wrapDisplay13ReadAUX(port,0x340,before,sizeof(before));
+  const bool capable=!status[0] && before[0]>=1 && (before[1]&0x10) && (before[2]&0x01);
+  if(requested && capable) {
+   uint8_t ctrl=uint8_t(before[4]|0x10);
+   status[1]=wrapDisplay13WriteAUX(port,0x344,&ctrl,1);
+   const uint32_t nits=5+uint32_t(uint64_t(brightness>65535?65535:brightness)*395/65535);
+   uint8_t level[2]={uint8_t(nits),uint8_t(nits>>8)};
+   status[2]=wrapDisplay13WriteAUX(port,0x354,level,2);
+   status[7]=nits;
+  }
+  status[3]=wrapDisplay13ReadAUX(port,0x340,after,sizeof(after));
+  status[4]=capable;
+ }
+ IOLockLock(c.lock);
+ {
+  Display13FBPanelIO io{c.map};
+  if(aux)c.bridge.putAUX(io,ddi);
+  if(pg)display13PanelPowerReference(false);
+ }
+ IOLockUnlock(c.lock);
+ port->release();
+ status[5]=(pg?1U:0U)|(aux?2U:0U)|(powered?4U:0U)|(requested?8U:0U);
+ auto root=IORegistryEntry::getRegistryRoot();
+ if(!root->getProperty("WEXPanelHDRFirst"))root->setProperty("WEXPanelHDRFirst",before,sizeof(before));
+ root->setProperty("WEXPanelHDRBefore",before,sizeof(before));
+ root->setProperty("WEXPanelHDRAfter",after,sizeof(after));
+ root->setProperty("WEXPanelHDRStatus",status,sizeof(status));
+}
 uint32_t XE::wrapDisplay13BacklightAudit(void *controller,uint32_t brightness) {
  const auto result=wrapADLSPanelBacklight(controller,brightness);
+ display13PanelHDR(brightness);
  display13PanelSnapshot(brightness,result);
  return result;
 }

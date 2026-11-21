@@ -128,6 +128,7 @@ private:
  static uint32_t wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing);
  static uint32_t wrapDisplay13BacklightAudit(void *controller,uint32_t brightness);
  static void display13PanelSnapshot(uint32_t brightness,uint32_t result);
+ static void display13PanelHDR(uint32_t brightness);
  static uint32_t wrapADLSPanelBacklight(void *controller,uint32_t brightness);
  static void wrapADLSPanelPWMEnable(void *access);
     mach_vm_address_t orgADLSPowerPG {};
