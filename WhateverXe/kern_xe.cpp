@@ -14220,7 +14220,7 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  uint32_t mmio[2+arrsize(regs)+1] {1,brightness};
  const auto ddi=s->firmwarePorts.panel.ddi;
  auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
- uint8_t dpcd[11+6+1+2+3] {};uint32_t status[6] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result};
+ uint8_t dpcd[11+6+1+2+3+2+8+1] {};uint32_t status[8] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result,UINT32_MAX,UINT32_MAX};
  uint64_t surface[5] {},ptes[8] {};
  bool pg=false,aux=false,powered=false;
  if(port)port->retain();
@@ -14256,6 +14256,12 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
   status[2]=wrapDisplay13ReadAUX(port,0x600,dpcd+17,1);
   status[3]=wrapDisplay13ReadAUX(port,0x170,dpcd+18,2);
   status[4]=wrapDisplay13ReadAUX(port,0x2008,dpcd+20,3);
+  // Sink count/service IRQ, per-lane symbol error counters (bit15 valid),
+  // TEST_SINK_MISC (CRC capability). Errors with locked lanes indicate a
+  // marginal retrain (drive levels) rather than a source timing fault.
+  status[6]=wrapDisplay13ReadAUX(port,0x200,dpcd+23,2);
+  status[7]=wrapDisplay13ReadAUX(port,0x210,dpcd+25,8);
+  wrapDisplay13ReadAUX(port,0x246,dpcd+33,1);
  }
  IOLockLock(c.lock);
  {
