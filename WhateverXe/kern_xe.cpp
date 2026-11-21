@@ -14076,7 +14076,7 @@ bool XE::adlsCapturePanelPWM(void *controller) {
 static thread_call_t display13SamplerCall {};
 static uint32_t display13SamplerTicks {};
 static bool display13SamplerNoDIP {};
-static bool display13ProbeEnabled {},display13ProbeSaved {};static uint32_t display13ProbeStep {};static uint8_t display13ProbeBase[3] {};
+static bool display13ProbeEnabled {},display13ProbeSaved {};static uint32_t display13ProbeStep {};static uint8_t display13ProbeBase[3] {};static uint64_t display13ProbeLastNs {};
 static uint32_t display13SamplerRing[64*12] {};
 static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  auto &c=display13FBPower;auto &q=display13FBIRQ;
@@ -14279,7 +14279,11 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
    uint8_t now[3] {};
    wrapDisplay13ReadAUX(port,0x720,&now[0],1);wrapDisplay13ReadAUX(port,0x721,&now[1],1);wrapDisplay13ReadAUX(port,0x344,&now[2],1);
    if(!display13ProbeSaved){memcpy(display13ProbeBase,now,3);display13ProbeSaved=true;}
-   const auto step=++display13ProbeStep;
+   // A single ~/bright or boot restore fades through many native calls.
+   // Advance only after 3 s without an advance; otherwise re-apply.
+   uint64_t nowNs=0;{uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&nowNs);}
+   if(!display13ProbeLastNs || nowNs-display13ProbeLastNs>3000000000ULL){++display13ProbeStep;display13ProbeLastNs=nowNs;}
+   const auto step=display13ProbeStep;
    uint8_t v720=display13ProbeBase[0],v721=display13ProbeBase[1],v344=display13ProbeBase[2];
    if(step==1||step==6)v720=0;
    if(step==2||step==6)v344=0;
