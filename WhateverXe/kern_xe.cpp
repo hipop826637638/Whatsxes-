@@ -14115,6 +14115,38 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
 }
+// Read-only panel state around native LightUpEDP. MMIO: PP_STATUS,
+// PP_CONTROL, PP_ON, PP_OFF, PP_DIVISOR, BLC_PWM CTL/PERIOD/DUTY, DDI_BUF,
+// DP_TP_CTL, TRANS_DDI_FUNC, uptime ms. DPCD (if AUX answers): 0x600,
+// 0x700-0x72F, 0x340-0x35F, 0x100-0x10A, 0x202-0x207, 0x00D.
+void XE::display13PanelStateCapture(uint8_t *dpcd,uint32_t *mmio) {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!c.lock || !c.map || !c.map->getVirtualAddress() || c.map->getLength()<0x1000000)return;
+ const auto va=c.map->getVirtualAddress();
+ auto rd=[&](uint32_t r)->uint32_t{return *reinterpret_cast<volatile uint32_t *>(va+r);};
+ static const uint32_t regs[]={0xC7200,0xC7204,0xC7208,0xC720C,0xC7210,0xC8250,0xC8254,0xC8258,0x64000,0x60540,0x60400};
+ for(unsigned i=0;i<11;++i)mmio[i]=rd(regs[i]);
+ {uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);mmio[11]=uint32_t(ns/1000000);}
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ if(!port || !(mmio[0]&0x80000000U))return;
+ bool pg=false,aux=false;
+ port->retain();
+ IOLockLock(c.lock);
+ {Display13FBPanelIO io{c.map};pg=display13PanelPowerReference(true);if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;}
+ IOLockUnlock(c.lock);
+ if(aux) {
+  wrapDisplay13ReadAUX(port,0x600,dpcd,1);
+  wrapDisplay13ReadAUX(port,0x700,dpcd+1,16);wrapDisplay13ReadAUX(port,0x710,dpcd+17,16);wrapDisplay13ReadAUX(port,0x720,dpcd+33,16);
+  wrapDisplay13ReadAUX(port,0x340,dpcd+49,16);wrapDisplay13ReadAUX(port,0x350,dpcd+65,16);
+  wrapDisplay13ReadAUX(port,0x100,dpcd+81,11);wrapDisplay13ReadAUX(port,0x00D,dpcd+92,1);
+  wrapDisplay13ReadAUX(port,0x202,dpcd+93,3);
+ }
+ IOLockLock(c.lock);
+ {Display13FBPanelIO io{c.map};if(aux)c.bridge.putAUX(io,ddi);if(pg)display13PanelPowerReference(false);}
+ IOLockUnlock(c.lock);
+ port->release();
+}
 uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing) {
  auto s=callbackXE;
  const bool edpAudit=s->display13FramebufferRequested && s->adlnOutputWiring.panel && path &&
@@ -14153,8 +14185,17 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   IORegistryEntry::getRegistryRoot()->setProperty("WEXLightUpEDPModes",modes,sizeof(modes));
   if(object) {audit[21]=Display13FBMemory::field<uint32_t>(fb,0x4250);audit[22]=Display13FBMemory::field<uint32_t>(fb,0x4254);}
  }
+ uint8_t preDPCD[96] {};uint32_t preMMIO[12] {};
+ if(edpAudit)display13PanelStateCapture(preDPCD,preMMIO);
  const auto result=wrapADLSLightUpEDP(controller,fb,path,timing);
  if(edpAudit) {
+  uint8_t postDPCD[96] {};uint32_t postMMIO[12] {};
+  display13PanelStateCapture(postDPCD,postMMIO);
+  auto r=IORegistryEntry::getRegistryRoot();
+  if(!r->getProperty("WEXLightUpPreDPCD")) {
+   r->setProperty("WEXLightUpPreDPCD",preDPCD,sizeof(preDPCD));r->setProperty("WEXLightUpPreMMIO",preMMIO,sizeof(preMMIO));
+   r->setProperty("WEXLightUpPostDPCD",postDPCD,sizeof(postDPCD));r->setProperty("WEXLightUpPostMMIO",postMMIO,sizeof(postMMIO));
+  }
   audit[14]=result;audit[15]=Display13FBMemory::field<uint64_t>(path,0x118);
   audit[16]=Display13FBMemory::field<uint32_t>(path,0x138);audit[17]=Display13FBMemory::field<uint32_t>(path,0x3640);
   audit[18]=Display13FBMemory::field<uint32_t>(path,0x160);audit[19]=Display13FBMemory::field<uint32_t>(path,0x164);
