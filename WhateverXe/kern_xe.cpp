@@ -14213,7 +14213,7 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  uint32_t mmio[2+arrsize(regs)+1] {1,brightness};
  const auto ddi=s->firmwarePorts.panel.ddi;
  auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
- uint8_t dpcd[2+6+1+2+3] {};uint32_t status[6] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result};
+ uint8_t dpcd[11+6+1+2+3] {};uint32_t status[6] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result};
  uint64_t surface[5] {},ptes[8] {};
  bool pg=false,aux=false,powered=false;
  if(port)port->retain();
@@ -14242,11 +14242,13 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  }
  IOLockUnlock(c.lock);
  if(aux && powered) {
-  status[0]=wrapDisplay13ReadAUX(port,0x100,dpcd,2);
-  status[1]=wrapDisplay13ReadAUX(port,0x202,dpcd+2,6);
-  status[2]=wrapDisplay13ReadAUX(port,0x600,dpcd+8,1);
-  status[3]=wrapDisplay13ReadAUX(port,0x170,dpcd+9,2);
-  status[4]=wrapDisplay13ReadAUX(port,0x2008,dpcd+11,3);
+  // 0x100-0x10A: link rate, lanes, TRAINING_PATTERN_SET (bit5 scrambling
+  // disable), lane drive, DOWNSPREAD_CTRL, coding, EDP_CONFIGURATION_SET.
+  status[0]=wrapDisplay13ReadAUX(port,0x100,dpcd,11);
+  status[1]=wrapDisplay13ReadAUX(port,0x202,dpcd+11,6);
+  status[2]=wrapDisplay13ReadAUX(port,0x600,dpcd+17,1);
+  status[3]=wrapDisplay13ReadAUX(port,0x170,dpcd+18,2);
+  status[4]=wrapDisplay13ReadAUX(port,0x2008,dpcd+20,3);
  }
  IOLockLock(c.lock);
  {
