@@ -18068,8 +18068,12 @@ void XE::wrapTGLModeTiming(void *controller,void *fb,void *timing) {
  auto port=*reinterpret_cast<void **>(path+0x3648);
  const auto ddi=tglPanelDepthPort(port);if(ddi>1)return;
  IOSimpleLockLock(tglAUXLock);
- const auto maximum=tglPanelDepthCache[ddi].port==port ? tglPanelDepthCache[ddi].maximum : 0;
+ auto maximum=tglPanelDepthCache[ddi].port==port ? tglPanelDepthCache[ddi].maximum : 0;
  IOSimpleLockUnlock(tglAUXLock);
+ // Opt-in -wex-panel-8bpc: cap the internal panel at 8 bpc. ASUS UX7602ZM
+ // (ATNA60YV02, HBR2 x4) shows the 8 bpc firmware stream, but goes dark at
+ // the EDID's 10 bpc, which needs 99.3% of the link at 3840x2400@60.
+ if(checkKernelArgument("-wex-panel-8bpc") && (!maximum || maximum>8))maximum=8;
  const auto encoding=*reinterpret_cast<uint16_t *>(t+0x88);
  auto &depth=*reinterpret_cast<uint16_t *>(t+0x8A);
  const auto before=depth;
