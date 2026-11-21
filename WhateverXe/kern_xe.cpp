@@ -14115,6 +14115,39 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   auto root=IORegistryEntry::getRegistryRoot();
   if(!root->getProperty("WEXLightUpEDPFirst"))root->setProperty("WEXLightUpEDPFirst",audit,sizeof(audit));
   root->setProperty("WEXLightUpEDPLast",audit,sizeof(audit));
+  // Read-only DPCD capability dump after a successful light-up (panel
+  // powered): base caps, VESA eDP backlight caps/controls, and the Intel
+  // HDR/OLED backlight capability block. Same power/AUX lease as the
+  // AUX brightness backend; no DPCD writes.
+  if(result==0 && !root->getProperty("WEXPanelDPCD")) {
+   auto &c=display13FBPower;
+   const auto ddi=s->firmwarePorts.panel.ddi;
+   auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+   uint8_t dpcd[16+3+5+8] {};uint32_t status[5] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,0};
+   bool pg=false,aux=false,powered=false;
+   if(port && c.lock) {
+    port->retain();
+    IOLockLock(c.lock);Display13FBPanelIO io{c.map};
+    pg=display13PanelPowerReference(true);
+    if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;
+    powered=io.read(0xC7200)!=UINT32_MAX && (io.read(0xC7200)&0x80000000U);
+    IOLockUnlock(c.lock);
+    if(aux && powered) {
+     status[0]=wrapDisplay13ReadAUX(port,0x000,dpcd,16);
+     status[1]=wrapDisplay13ReadAUX(port,0x700,dpcd+16,3);
+     status[2]=wrapDisplay13ReadAUX(port,0x720,dpcd+19,5);
+     status[3]=wrapDisplay13ReadAUX(port,0x340,dpcd+24,8);
+    }
+    IOLockLock(c.lock);Display13FBPanelIO done{c.map};
+    if(aux)c.bridge.putAUX(done,ddi);
+    if(pg)display13PanelPowerReference(false);
+    IOLockUnlock(c.lock);
+    port->release();
+   }
+   status[4]=(pg?1U:0U)|(aux?2U:0U)|(powered?4U:0U)|(port?8U:0U);
+   root->setProperty("WEXPanelDPCD",dpcd,sizeof(dpcd));
+   root->setProperty("WEXPanelDPCDStatus",status,sizeof(status));
+  }
  }
  return result;
 }
