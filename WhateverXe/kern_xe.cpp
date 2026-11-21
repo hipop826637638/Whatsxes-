@@ -14226,25 +14226,11 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  root->setProperty("WEXPanelLiveMMIO",mmio,sizeof(mmio));
  root->setProperty("WEXPanelLiveDPCD",dpcd,sizeof(dpcd));
  root->setProperty("WEXPanelLiveStatus",status,sizeof(status));
- // Sample 128 bytes of each mapped page: nonzero count and XOR. A desktop
- // has content; a scratch/zero page has none. Read-only physical maps.
- uint64_t pages[5+8*4] {};
+ // PTE values only. Never dereference a PTE target: on ASUS UX7602ZM a
+ // read through a sampled PTE hung boot before networking.
+ uint64_t pages[5+8] {};
  for(unsigned i=0;i<5;++i)pages[i]=surface[i];
- for(unsigned k=0;k<8;++k) {
-  pages[5+4*k]=ptes[k];
-  const uint64_t phys=ptes[k]&0x7FFFFFF000ULL;
-  if(!(ptes[k]&1) || !phys)continue;
-  auto md=IOMemoryDescriptor::withPhysicalAddress(phys,4096,kIODirectionIn);
-  auto mm=md?md->map(kIOMapReadOnly):nullptr;
-  if(mm && mm->getVirtualAddress()) {
-   const auto p=reinterpret_cast<const volatile uint8_t *>(mm->getVirtualAddress());
-   uint64_t nonzero=0,x=0;
-   for(unsigned b=0;b<128;++b){const uint8_t v=p[b*32];nonzero+=v!=0;x=(x<<1|x>>63)^v;}
-   pages[6+4*k]=nonzero;pages[7+4*k]=x;pages[8+4*k]=1;
-  }
-  if(mm)mm->release();
-  if(md)md->release();
- }
+ for(unsigned k=0;k<8;++k)pages[5+k]=ptes[k];
  root->setProperty("WEXPanelSurface",pages,sizeof(pages));
 }
 // Intel eDP HDR/OLED backlight interface (Linux v6.12
