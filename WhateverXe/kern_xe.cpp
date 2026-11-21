@@ -14079,6 +14079,7 @@ static bool display13SamplerNoDIP {};
 static bool display13ProbeEnabled {},display13ProbeSaved {};static uint8_t display13ProbeBase[3] {};
 static uint64_t display13ProbeStartNs {};
 static void (*display13ProbeTimedFn)() {};
+static void (*display13NoASSRFn)() {};static uint32_t display13NoASSRCount {};
 // -wex-panel-probe schedule: nothing for 60 s after light-up, then steps
 // 1..6 for 20 s each, then 7 (restore) and stop.
 static uint32_t display13ProbeCurrent() {
@@ -14110,7 +14111,8 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   root->setProperty("WEXPanelSamplerMeta",meta,sizeof(meta));
  }
  if(display13ProbeTimedFn)display13ProbeTimedFn();
- if(++display13SamplerTicks<(display13ProbeEnabled?120U:60U) && display13SamplerCall) {
+ if(display13NoASSRFn)display13NoASSRFn();
+ if(++display13SamplerTicks<((display13ProbeEnabled||display13NoASSRFn)?120U:60U) && display13SamplerCall) {
   uint64_t deadline=0;clock_interval_to_deadline(display13SamplerTicks<6?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
@@ -14210,6 +14212,7 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   if(result==0 && !display13SamplerCall) {
    display13SamplerNoDIP=checkKernelArgument("-wex-panel-nodip");
    display13ProbeEnabled=checkKernelArgument("-wex-panel-probe");
+   if(checkKernelArgument("-wex-panel-noassr"))display13NoASSRFn=&XE::display13PanelNoASSR;
    if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
    display13SamplerCall=thread_call_allocate(display13SamplerTick,nullptr);
    if(display13SamplerCall) {
@@ -14478,6 +14481,41 @@ void XE::display13PanelProbeTimed() {
  }
  IOLockUnlock(c.lock);
  port->release();
+}
+// Opt-in -wex-panel-noassr: match the firmware's displaying state. Native
+// LightUpEDP enables eDP alternate scrambler reset on both ends (DP_TP_CTL
+// bit6 0x40 and sink EDP_CONFIGURATION_SET 0x10A=1); the firmware stream
+// that the ASUS UX7602ZM panel shows uses DP_TP_CTL 0x80040300 without it.
+// Each sampler tick clears both and records what it found.
+void XE::display13PanelNoASSR() {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map ||
+    !c.map->getVirtualAddress() || c.map->getLength()<0x1000000)return;
+ const auto va=c.map->getVirtualAddress();
+ auto reg=reinterpret_cast<volatile uint32_t *>(va+0x60540);
+ const uint32_t tpBefore=*reg;
+ const auto ddi=s->firmwarePorts.panel.ddi;
+ auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+ if(!port || !(tpBefore&0x80000000U))return;
+ bool pg=false,aux=false;
+ port->retain();
+ IOLockLock(c.lock);
+ {Display13FBPanelIO io{c.map};pg=display13PanelPowerReference(true);if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;}
+ IOLockUnlock(c.lock);
+ uint8_t sinkBefore=0xFF,sinkAfter=0xFF;uint32_t w=UINT32_MAX;
+ if(aux) {
+  wrapDisplay13ReadAUX(port,0x10A,&sinkBefore,1);
+  if(sinkBefore!=0xFF && (sinkBefore&1)){uint8_t v=uint8_t(sinkBefore&~1U);w=wrapDisplay13WriteAUX(port,0x10A,&v,1);}
+  if(tpBefore&0x40)*reg=tpBefore&~0x40U;
+  wrapDisplay13ReadAUX(port,0x10A,&sinkAfter,1);
+ }
+ IOLockLock(c.lock);
+ {Display13FBPanelIO io{c.map};if(aux)c.bridge.putAUX(io,ddi);if(pg)display13PanelPowerReference(false);}
+ IOLockUnlock(c.lock);
+ port->release();
+ if((tpBefore&0x40) || (sinkBefore&1))++display13NoASSRCount;
+ uint32_t rec[7]={tpBefore,*reg,sinkBefore,sinkAfter,w,display13NoASSRCount,aux};
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelNoASSR",rec,sizeof(rec));
 }
 uint32_t XE::wrapDisplay13BacklightAudit(void *controller,uint32_t brightness) {
  const auto result=wrapADLSPanelBacklight(controller,brightness);

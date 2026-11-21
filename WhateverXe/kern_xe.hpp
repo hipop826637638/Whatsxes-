@@ -132,6 +132,7 @@ private:
  static void display13PanelProbeApply(void *port,uint32_t step);
  static void display13PanelProbeTimed();
  static void display13PanelStateCapture(uint8_t *dpcd,uint32_t *mmio);
+ static void display13PanelNoASSR();
  static uint32_t wrapADLSPanelBacklight(void *controller,uint32_t brightness);
  static void wrapADLSPanelPWMEnable(void *access);
     mach_vm_address_t orgADLSPowerPG {};
