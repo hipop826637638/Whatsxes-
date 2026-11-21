@@ -14226,6 +14226,23 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  root->setProperty("WEXPanelLiveMMIO",mmio,sizeof(mmio));
  root->setProperty("WEXPanelLiveDPCD",dpcd,sizeof(dpcd));
  root->setProperty("WEXPanelLiveStatus",status,sizeof(status));
+ // Live display interrupt delivery: WEX counters (interrupts, per-pipe
+ // vblanks/flips/underruns, handlers) and pipe A ISR/IMR/IIR/IER, DE/GFX
+ // master controls. Stalled vblanks freeze WindowServer flips and cursor.
+ {
+  auto &q=display13FBIRQ;auto &st=q.state;
+  uint64_t irq[16] {1,st.interrupts,st.vblanks[0],st.vblanks[1],st.vblanks[2],st.flips[0],st.flips[1],st.flips[2],
+   st.underruns[0],q.handlers,st.enabled,st.faulted,0,0,0,0};
+  if(c.map && c.map->getVirtualAddress() && c.map->getLength()>=0x1000000) {
+   const auto va=c.map->getVirtualAddress();
+   auto rd=[&](uint32_t r)->uint32_t{return *reinterpret_cast<volatile uint32_t *>(va+r);};
+   irq[12]=uint64_t(rd(0x44400))|uint64_t(rd(0x44404))<<32;
+   irq[13]=uint64_t(rd(0x44408))|uint64_t(rd(0x4440C))<<32;
+   irq[14]=uint64_t(rd(0x44200))|uint64_t(rd(0x190010))<<32;
+   irq[15]=uint64_t(rd(0x70040));
+  }
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelIRQ",irq,sizeof(irq));
+ }
  // PTE values only. Never dereference a PTE target: on ASUS UX7602ZM a
  // read through a sampled PTE hung boot before networking.
  uint64_t pages[5+8] {};
