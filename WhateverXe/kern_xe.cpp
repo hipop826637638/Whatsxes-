@@ -14222,6 +14222,7 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
  uint8_t dpcd[11+6+1+2+3+2+8+1] {};uint32_t status[8] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX,result,UINT32_MAX,UINT32_MAX};
  uint64_t surface[5] {},ptes[8] {};
+ uint8_t sinkCRC[16] {};uint32_t crcStatus[4] {UINT32_MAX,UINT32_MAX,UINT32_MAX,UINT32_MAX};
  bool pg=false,aux=false,powered=false;
  if(port)port->retain();
  IOLockLock(c.lock);
@@ -14262,6 +14263,19 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
   status[6]=wrapDisplay13ReadAUX(port,0x200,dpcd+23,2);
   status[7]=wrapDisplay13ReadAUX(port,0x210,dpcd+25,8);
   wrapDisplay13ReadAUX(port,0x246,dpcd+33,1);
+  // Sink CRC of the received frame (TEST_SINK 0x270 bit0, TEST_CRC_R/G/B
+  // 0x240-0x245, count in 0x246 bits 3:0): two captures 500 ms apart. A
+  // fixed CRC while the cursor/desktop changes means black/static content.
+  if(dpcd[33]&0x20) {
+   uint8_t crc[2][8] {};uint8_t on=1,off=0;
+   crcStatus[0]=wrapDisplay13WriteAUX(port,0x270,&on,1);
+   IOSleep(100);
+   crcStatus[1]=wrapDisplay13ReadAUX(port,0x240,crc[0],7);
+   IOSleep(500);
+   crcStatus[2]=wrapDisplay13ReadAUX(port,0x240,crc[1],7);
+   crcStatus[3]=wrapDisplay13WriteAUX(port,0x270,&off,1);
+   memcpy(sinkCRC,crc,sizeof(crc));
+  }
  }
  IOLockLock(c.lock);
  {
@@ -14275,6 +14289,8 @@ void XE::display13PanelSnapshot(uint32_t brightness,uint32_t result) {
  root->setProperty("WEXPanelLiveMMIO",mmio,sizeof(mmio));
  root->setProperty("WEXPanelLiveDPCD",dpcd,sizeof(dpcd));
  root->setProperty("WEXPanelLiveStatus",status,sizeof(status));
+ root->setProperty("WEXPanelSinkCRC",sinkCRC,sizeof(sinkCRC));
+ root->setProperty("WEXPanelSinkCRCStatus",crcStatus,sizeof(crcStatus));
  // Live display interrupt delivery: WEX counters (interrupts, per-pipe
  // vblanks/flips/underruns, handlers) and pipe A ISR/IMR/IIR/IER, DE/GFX
  // master controls. Stalled vblanks freeze WindowServer flips and cursor.
