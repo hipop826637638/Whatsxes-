@@ -389,6 +389,7 @@ private:
  mach_vm_address_t orgDisplay13DPPhyGating {},orgDisplay13DPLaneMask {},orgDisplay13DPPortWrite {},display13DPImage {};
  static uint32_t wrapDisplay13TCLightUp(void *,void *,void *,const void *);
     static uint32_t wrapDisplay13TCSetMode(void *,void *,const void *);
+    static uint32_t wrapDisplay13TCSetModeRepair(void *,void *,const void *);
     bool processDisplay13FramebufferTC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static unsigned display13TCTarget(OSObject *,bool cleanup=false);
     static uint32_t wrapDisplay13TCMode(OSObject *,uint32_t);

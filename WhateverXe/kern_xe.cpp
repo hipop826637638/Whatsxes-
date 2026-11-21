@@ -7134,6 +7134,59 @@ uint32_t XE::wrapDisplay13TCLightUp(void *controller,void *rawFB,void *rawPath,c
     return result.status;
 }
 
+// ASUS UX7602ZM: on internal eDP, a native hwSetMode caller passes a timing
+// holding kernel pointers (pixel clock 0xffffff80..., HActive 0x9fcb3d59)
+// while the framebuffer's own detailed-mode table (fb+0x4260, OSData) holds
+// the correct EDID mode. Replace only an impossible timing, only with the
+// table entry validateDisplayMode would return for the current mode (or the
+// first plausible entry), and record the native caller offset.
+static bool display13TimingPlausible(const uint8_t *t) {
+    if(!t)return false;
+    uint64_t clock;uint32_t ha,hb,va,vb;
+    memcpy(&clock,t+0x28,8);memcpy(&ha,t+0x40,4);memcpy(&hb,t+0x44,4);memcpy(&va,t+0x50,4);memcpy(&vb,t+0x54,4);
+    return clock>=1000000 && clock<=2000000000ULL && ha && ha<=16384 && hb<=16384 && va && va<=16384 && vb<=16384;
+}
+static const uint8_t *display13TableTiming(void *fb,uint32_t &index) {
+    index=UINT32_MAX;
+    auto service=static_cast<OSObject *>(fb);
+    if(!service || service->getMetaClass()->getClassSize()<0x4B90)return nullptr;
+    auto array=OSDynamicCast(OSArray,Display13FBMemory::field<OSObject *>(fb,0x4260));
+    if(!array || !array->getCount())return nullptr;
+    const auto mode=Display13FBMemory::field<uint32_t>(fb,0x4250);
+    auto entry=[&](unsigned i)->const uint8_t * {
+        auto data=OSDynamicCast(OSData,array->getObject(i));
+        if(!data || data->getLength()<160)return nullptr;
+        auto bytes=static_cast<const uint8_t *>(data->getBytesNoCopy());
+        return display13TimingPlausible(bytes)?bytes:nullptr;
+    };
+    if(mode>=0x10000 && (mode&0x3FF)<array->getCount()) {
+        if(auto bytes=entry(mode&0x3FF)){index=mode&0x3FF;return bytes;}
+    }
+    for(unsigned i=0;i<array->getCount();++i)if(auto bytes=entry(i)){index=i;return bytes;}
+    return nullptr;
+}
+
+uint32_t XE::wrapDisplay13TCSetModeRepair(void *controller,void *fb,const void *timing) {
+    auto self=callbackXE;
+    uint8_t repaired[160];
+    if(self->adlnOutputWiring.panel && !display13TimingPlausible(static_cast<const uint8_t *>(timing))) {
+        uint32_t index=UINT32_MAX;
+        const auto source=display13TableTiming(fb,index);
+        uint64_t record[8] {1,uint64_t(reinterpret_cast<uintptr_t>(__builtin_return_address(0))-self->display13DPImage),
+            timing!=nullptr,source!=nullptr,index,0,0,source?Display13FBMemory::field<uint32_t>(fb,0x4250):UINT32_MAX};
+        if(timing)memcpy(&record[5],static_cast<const uint8_t *>(timing)+0x28,8);
+        if(source) {
+            memcpy(repaired,source,sizeof(repaired));
+            memcpy(&record[6],repaired+0x28,8);
+            timing=repaired;
+        }
+        auto root=IORegistryEntry::getRegistryRoot();
+        if(!root->getProperty("WEXSetModeTimingRepairFirst"))root->setProperty("WEXSetModeTimingRepairFirst",record,sizeof(record));
+        root->setProperty("WEXSetModeTimingRepairLast",record,sizeof(record));
+    }
+    return wrapDisplay13TCSetMode(controller,fb,timing);
+}
+
 uint32_t XE::wrapDisplay13TCSetMode(void *controller,void *fb,const void *timing) {
     auto self=callbackXE;
     // The GOP-preserving surface adapter must replace this refusal before
@@ -7189,7 +7242,7 @@ bool XE::processDisplay13FramebufferTC(KernelPatcher &patcher,size_t index,mach_
         {entries[Clocks].symbol,wrapDisplay13TCEnableClocks,orgDisplay13TCEnableClocks},
         {entries[DisableClocks].symbol,wrapDisplay13TCDisableClocks,orgDisplay13TCDisableClocks},
         {entries[LightUp].symbol,wrapDisplay13TCLightUp,orgDisplay13TCLightUp},
-        {entries[SetMode].symbol,wrapDisplay13TCSetMode,orgDisplay13TCSetMode},
+        {entries[SetMode].symbol,wrapDisplay13TCSetModeRepair,orgDisplay13TCSetMode},
         {entries[DPLightUp].symbol,wrapDisplay13DPLightUp,orgDisplay13DPLightUp},
         {entries[PhyGating].symbol,wrapDisplay13DPPhyGating,orgDisplay13DPPhyGating},
         {entries[LaneMask].symbol,wrapDisplay13DPLaneMask,orgDisplay13DPLaneMask},
