@@ -14080,6 +14080,29 @@ static bool display13ProbeEnabled {},display13ProbeSaved {};static uint8_t displ
 static uint64_t display13ProbeStartNs {};
 static void (*display13ProbeTimedFn)() {};
 static void (*display13NoASSRFn)() {};static uint32_t display13NoASSRCount {};
+static bool display13BLProbe {};static uint64_t display13BLProbeStartNs {};
+static uint32_t display13BLSaved[3] {};static bool display13BLHaveSaved {};
+// -wex-panel-blprobe (MMIO only): 60 s after light-up, then 20 s each:
+// 1 PP_CONTROL bit2 (EDP_BLC_ENABLE) off; 2 on + 100% PCH PWM at 1 kHz;
+// 3 off + 100% PWM; 4 restore and stop.
+static void display13BLProbeTick() {
+ auto &c=display13FBPower;
+ if(!display13BLProbe || !display13BLProbeStartNs || !c.map || !c.map->getVirtualAddress() || c.map->getLength()<0x1000000)return;
+ uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);
+ const uint64_t elapsed=(ns-display13BLProbeStartNs)/1000000000ULL;
+ if(elapsed<60)return;
+ uint32_t step=1+uint32_t((elapsed-60)/20);if(step>4)step=4;
+ const auto va=c.map->getVirtualAddress();
+ auto r=[&](uint32_t o)->volatile uint32_t &{return *reinterpret_cast<volatile uint32_t *>(va+o);};
+ if(!display13BLHaveSaved){display13BLSaved[0]=r(0xC7204);display13BLSaved[1]=r(0xC8250);display13BLSaved[2]=r(0xC8254);display13BLHaveSaved=true;}
+ uint32_t pp=display13BLSaved[0],ctl=display13BLSaved[1],period=display13BLSaved[2];
+ if(step==1||step==3)pp&=~4U;
+ if(step==2)pp|=4U;
+ if(step==2||step==3){period=(19200U<<16)|19200U;ctl=0x80000000U;}
+ r(0xC8254)=period;r(0xC8250)=ctl;r(0xC7204)=pp;
+ uint32_t rec[8]={step,display13BLSaved[0],display13BLSaved[1],display13BLSaved[2],r(0xC7204),r(0xC8250),r(0xC8254),r(0xC7200)};
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelBLProbe",rec,sizeof(rec));
+}
 // -wex-panel-probe schedule: nothing for 60 s after light-up, then steps
 // 1..6 for 20 s each, then 7 (restore) and stop.
 static uint32_t display13ProbeCurrent() {
@@ -14112,7 +14135,8 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  }
  if(display13ProbeTimedFn)display13ProbeTimedFn();
  if(display13NoASSRFn)display13NoASSRFn();
- if(++display13SamplerTicks<((display13ProbeEnabled||display13NoASSRFn)?120U:60U) && display13SamplerCall) {
+ display13BLProbeTick();
+ if(++display13SamplerTicks<((display13ProbeEnabled||display13NoASSRFn||display13BLProbe)?120U:60U) && display13SamplerCall) {
   uint64_t deadline=0;clock_interval_to_deadline(display13SamplerTicks<6?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
@@ -14213,6 +14237,8 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
    display13SamplerNoDIP=checkKernelArgument("-wex-panel-nodip");
    display13ProbeEnabled=checkKernelArgument("-wex-panel-probe");
    if(checkKernelArgument("-wex-panel-noassr"))display13NoASSRFn=&XE::display13PanelNoASSR;
+   display13BLProbe=checkKernelArgument("-wex-panel-blprobe");
+   if(display13BLProbe){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13BLProbeStartNs);}
    if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
    display13SamplerCall=thread_call_allocate(display13SamplerTick,nullptr);
    if(display13SamplerCall) {

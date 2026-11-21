@@ -155,5 +155,6 @@
   "-wex-panel-8bpc": [],
   "-wex-panel-nodip": [],
   "-wex-panel-probe": [],
-  "-wex-panel-noassr": []
+  "-wex-panel-noassr": [],
+  "-wex-panel-blprobe": []
 }
