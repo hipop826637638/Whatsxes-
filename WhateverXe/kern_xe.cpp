@@ -14126,7 +14126,8 @@ static uint32_t display13PatternSaved[2] {};static bool display13PatternHaveSave
 // eDP 1.4+ panels that publish a rate table. Records WEXPanelFix2.
 static bool display13Fix2 {},display13Fix2RateDone {};static uint64_t display13Fix2StartNs {};
 static uint32_t display13Fix2Rec[12] {};
-
+static void (*display13Fix2Fn)() {};
+static uint32_t display13PatternStep() {
  if(!display13Pattern || !display13PatternStartNs || display13PatternDone)return 0;
  uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);
  const uint64_t elapsed=(ns-display13PatternStartNs)/1000000000ULL;
@@ -14209,7 +14210,7 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  display13BLProbeTick();
  display13PatternTick();
  display13TimingCapture("WEXPanelTimingLive",false);
- if(display13Fix2)XE::display13PanelFix2();
+ if(display13Fix2 && display13Fix2Fn)display13Fix2Fn();
  if(display13NoGamma && c.map && c.map->getVirtualAddress() && c.map->getLength()>=0x1000000) {
   auto mode=reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4A480);
   const uint32_t before=*mode;
@@ -14324,7 +14325,7 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
    display13NoGamma=checkKernelArgument("-wex-panel-nogamma");
    display13Pattern=checkKernelArgument("-wex-panel-pattern");
    display13Fix2=checkKernelArgument("-wex-panel-fix2");
-   if(display13Fix2){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13Fix2StartNs);}
+   if(display13Fix2){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13Fix2StartNs);display13Fix2Fn=&XE::display13PanelFix2;}
    if(display13Pattern){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13PatternStartNs);}
    if(display13BLProbe){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13BLProbeStartNs);}
    if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
