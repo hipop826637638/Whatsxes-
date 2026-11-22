@@ -4729,6 +4729,27 @@ struct Display13FBPowerContext {
     uint64_t powerContext[24] {1}; // Bounded CPU-only execution-context evidence.
 };
 static Display13FBPowerContext display13FBPower;
+// ASUS UX7602ZM diagnostic (read-only): transcoder A timing, transport,
+// pipe A scalers/DSC and the combo DPLL, captured once before the first
+// native SetMode (firmware stream the panel shows) and again live by the
+// panel sampler, to compare what the OLED accepts with what native runs.
+static const uint32_t display13TimingRegList[]={0x60000,0x60004,0x60008,0x6000C,0x60010,0x60014,0x60028,0x6001C,
+ 0x60400,0x60404,0x60410,0x60030,0x60034,0x60040,0x60044,0x6007C,0x60540,0x64000,0x70008,0x70030,
+ 0x70180,0x70188,0x70190,0x68180,0x68170,0x68174,0x68280,0x68270,0x68274,0x78000,0x78004,
+ 0x164280,0x164284,0x164288,0x46010,0x46014};
+static bool display13TimingCapture(const char *name,bool once) {
+ auto &c=display13FBPower;
+ if(!c.map || !c.map->getVirtualAddress() || c.map->getLength()<0x1000000)return false;
+ auto root=IORegistryEntry::getRegistryRoot();
+ if(once && root->getProperty(name))return true;
+ const auto va=c.map->getVirtualAddress();
+ constexpr unsigned n=sizeof(display13TimingRegList)/sizeof(display13TimingRegList[0]);
+ uint32_t v[n+1] {};
+ for(unsigned i=0;i<n;++i)v[i]=*reinterpret_cast<volatile uint32_t *>(va+display13TimingRegList[i]);
+ {uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);v[n]=uint32_t(ns/1000000);}
+ root->setProperty(name,v,sizeof(v));
+ return true;
+}
 #include "kern_dsi_adapter_state.inc"
 
 // AlderLakeN start bypasses the generic TGL framebuffer path and its power sampler.
@@ -7169,6 +7190,7 @@ static const uint8_t *display13TableTiming(void *fb,uint32_t &index) {
 
 uint32_t XE::wrapDisplay13TCSetModeRepair(void *controller,void *fb,const void *timing) {
     auto self=callbackXE;
+    if(self->adlnOutputWiring.panel)display13TimingCapture("WEXPanelTimingFirmware",true);
     uint8_t repaired[160];
     if(self->adlnOutputWiring.panel && !display13TimingPlausible(static_cast<const uint8_t *>(timing))) {
         uint32_t index=UINT32_MAX;
@@ -14179,6 +14201,7 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  if(display13NoASSRFn)display13NoASSRFn();
  display13BLProbeTick();
  display13PatternTick();
+ display13TimingCapture("WEXPanelTimingLive",false);
  if(display13NoGamma && c.map && c.map->getVirtualAddress() && c.map->getLength()>=0x1000000) {
   auto mode=reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4A480);
   const uint32_t before=*mode;
@@ -14263,6 +14286,7 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
   if(object) {audit[21]=Display13FBMemory::field<uint32_t>(fb,0x4250);audit[22]=Display13FBMemory::field<uint32_t>(fb,0x4254);}
  }
  uint8_t preDPCD[96] {};uint32_t preMMIO[12] {};
+ if(edpAudit)display13TimingCapture("WEXPanelTimingPreLightUp",true);
  if(edpAudit)display13PanelStateCapture(preDPCD,preMMIO);
  const auto result=wrapADLSLightUpEDP(controller,fb,path,timing);
  if(edpAudit) {
