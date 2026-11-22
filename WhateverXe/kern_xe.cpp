@@ -14977,6 +14977,19 @@ bool XE::wrapTGLAcceleratorStart(IOService *that, IOService *provider) {
   return false;
  }
  tglRecordStartOrder(5,that);
+ // Opt-in -wex-norc: turn off IOSurface render compression before the
+ // native start reads its Development dictionary. ASUS UX7602ZM: the
+ // panel shows framebuffer-memory scanout (boot console, shutdown) but not
+ // WindowServer's flipped IOSurfaces; PLANE_CTL has no decompression set.
+ if(checkKernelArgument("-wex-norc")) {
+  if(auto dev=OSDynamicCast(OSDictionary,that->getProperty("Development"))) {
+   if(auto copy=OSDictionary::withDictionary(dev)) {
+    if(auto zero=OSNumber::withNumber(0ULL,32)){copy->setObject("AllowIOSurfaceRenderCompression",zero);zero->release();}
+    that->setProperty("Development",copy);copy->release();
+    IORegistryEntry::getRegistryRoot()->setProperty("WEXRenderCompressionOff",true);
+   }
+  }
+ }
 	if (!callbackXE->tglAcceleratorReady) return false;
 	if (callbackXE->adlnDetected) {
 		auto pci=OSDynamicCast(IOPCIDevice,provider);
