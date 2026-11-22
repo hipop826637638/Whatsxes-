@@ -157,5 +157,6 @@
   "-wex-panel-probe": [],
   "-wex-panel-noassr": [],
   "-wex-panel-blprobe": [],
-  "-wex-norc": []
+  "-wex-norc": [],
+  "-wex-panel-nogamma": []
 }

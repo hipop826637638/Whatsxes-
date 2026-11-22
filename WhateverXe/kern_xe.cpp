@@ -14081,6 +14081,14 @@ static uint64_t display13ProbeStartNs {};
 static void (*display13ProbeTimedFn)() {};
 static void (*display13NoASSRFn)() {};static uint32_t display13NoASSRCount {};
 static bool display13BLProbe {};static uint64_t display13BLProbeStartNs {};
+// Opt-in -wex-panel-nogamma: on display 13 the pipe gamma/degamma stage
+// applies to every plane (PLANE_COLOR_CTL pipe-gamma/CSC bits are pre-ICL
+// only). Native code enables pre+post CSC gamma in 10-bit mode
+// (GAMMA_MODE 0xE0000001) once WindowServer loads its gamma; if the LUTs
+// are not in the display 13 layout the pipe outputs black. Each sampler
+// tick drops GAMMA_MODE back to the legacy 8-bit palette (linear here)
+// and records what it found.
+static bool display13NoGamma {};static uint32_t display13NoGammaCount {};
 static uint32_t display13BLSaved[3] {};static bool display13BLHaveSaved {};
 // -wex-panel-blprobe (MMIO only): 60 s after light-up, then 20 s each:
 // 1 PP_CONTROL bit2 (EDP_BLC_ENABLE) off; 2 on + 100% PCH PWM at 1 kHz;
@@ -14136,7 +14144,14 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  if(display13ProbeTimedFn)display13ProbeTimedFn();
  if(display13NoASSRFn)display13NoASSRFn();
  display13BLProbeTick();
- if(++display13SamplerTicks<((display13ProbeEnabled||display13NoASSRFn||display13BLProbe)?120U:60U) && display13SamplerCall) {
+ if(display13NoGamma && c.map && c.map->getVirtualAddress() && c.map->getLength()>=0x1000000) {
+  auto mode=reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4A480);
+  const uint32_t before=*mode;
+  if(before!=UINT32_MAX && (before&0xE0000003U)){*mode=before&~0xE0000003U;++display13NoGammaCount;}
+  uint32_t rec[4]={before,*mode,display13NoGammaCount,display13SamplerTicks};
+  IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelNoGamma",rec,sizeof(rec));
+ }
+ if(++display13SamplerTicks<((display13ProbeEnabled||display13NoASSRFn||display13BLProbe||display13NoGamma)?120U:60U) && display13SamplerCall) {
   uint64_t deadline=0;clock_interval_to_deadline(display13SamplerTicks<6?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
@@ -14238,6 +14253,7 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
    display13ProbeEnabled=checkKernelArgument("-wex-panel-probe");
    if(checkKernelArgument("-wex-panel-noassr"))display13NoASSRFn=&XE::display13PanelNoASSR;
    display13BLProbe=checkKernelArgument("-wex-panel-blprobe");
+   display13NoGamma=checkKernelArgument("-wex-panel-nogamma");
    if(display13BLProbe){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13BLProbeStartNs);}
    if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
    display13SamplerCall=thread_call_allocate(display13SamplerTick,nullptr);
