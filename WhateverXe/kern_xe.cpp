@@ -14089,6 +14089,40 @@ static bool display13BLProbe {};static uint64_t display13BLProbeStartNs {};
 // tick drops GAMMA_MODE back to the legacy 8-bit palette (linear here)
 // and records what it found.
 static bool display13NoGamma {};static uint32_t display13NoGammaCount {};
+// Opt-in -wex-panel-pattern (MMIO only): 60 s after light-up, re-applied
+// every 1 s tick: step 1 (20 s) plane 1 off, pipe bottom colour white;
+// step 2 (20 s) plane off, bottom red; step 3 (20 s) plane on but forced
+// linear (scrambled desktop if scanout reaches the panel); step 4 restore
+// PLANE_CTL / bottom colour and stop. Tells whether the panel shows any
+// pipe output once WindowServer runs, independent of surface contents.
+static bool display13Pattern {};static uint64_t display13PatternStartNs {};
+static uint32_t display13PatternSaved[2] {};static bool display13PatternHaveSaved {},display13PatternDone {};
+static uint32_t display13PatternStep() {
+ if(!display13Pattern || !display13PatternStartNs || display13PatternDone)return 0;
+ uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);
+ const uint64_t elapsed=(ns-display13PatternStartNs)/1000000000ULL;
+ if(elapsed<60)return 0;
+ const auto step=1+uint32_t((elapsed-60)/20);
+ return step>4?4:step;
+}
+static void display13PatternTick() {
+ auto &c=display13FBPower;
+ const auto step=display13PatternStep();
+ if(!step || !c.map || !c.map->getVirtualAddress() || c.map->getLength()<0x1000000)return;
+ const auto va=c.map->getVirtualAddress();
+ auto r=[&](uint32_t o)->volatile uint32_t &{return *reinterpret_cast<volatile uint32_t *>(va+o);};
+ if(r(0x70180)==UINT32_MAX)return;
+ if(!display13PatternHaveSaved){display13PatternSaved[0]=r(0x70180);display13PatternSaved[1]=r(0x70034);display13PatternHaveSaved=true;}
+ const uint32_t saved=display13PatternSaved[0]|0x80000000U;
+ uint32_t ctl=saved,bottom=display13PatternSaved[1];
+ if(step==1){ctl=saved&~0x80000000U;bottom=0x3FFFFFFFU;}
+ if(step==2){ctl=saved&~0x80000000U;bottom=0x3FF00000U;}
+ if(step==3)ctl=saved&~0x1C00U;
+ r(0x70034)=bottom;r(0x70180)=ctl;r(0x7019C)=r(0x7019C);
+ if(step==4)display13PatternDone=true;
+ uint32_t rec[8]={step,display13PatternSaved[0],display13PatternSaved[1],r(0x70180),r(0x70034),r(0x7019C),r(0x70040),r(0xC7200)};
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelPattern",rec,sizeof(rec));
+}
 static uint32_t display13BLSaved[3] {};static bool display13BLHaveSaved {};
 // -wex-panel-blprobe (MMIO only): 60 s after light-up, then 20 s each:
 // 1 PP_CONTROL bit2 (EDP_BLC_ENABLE) off; 2 on + 100% PCH PWM at 1 kHz;
@@ -14144,6 +14178,7 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  if(display13ProbeTimedFn)display13ProbeTimedFn();
  if(display13NoASSRFn)display13NoASSRFn();
  display13BLProbeTick();
+ display13PatternTick();
  if(display13NoGamma && c.map && c.map->getVirtualAddress() && c.map->getLength()>=0x1000000) {
   auto mode=reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4A480);
   const uint32_t before=*mode;
@@ -14151,8 +14186,9 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   uint32_t rec[4]={before,*mode,display13NoGammaCount,display13SamplerTicks};
   IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelNoGamma",rec,sizeof(rec));
  }
- if(++display13SamplerTicks<((display13ProbeEnabled||display13NoASSRFn||display13BLProbe||display13NoGamma)?120U:60U) && display13SamplerCall) {
-  uint64_t deadline=0;clock_interval_to_deadline(display13SamplerTicks<6?1:5,kSecondScale,&deadline);
+ const bool patternActive=display13Pattern && !display13PatternDone;
+ if(++display13SamplerTicks<(patternActive?400U:(display13ProbeEnabled||display13NoASSRFn||display13BLProbe||display13NoGamma)?120U:60U) && display13SamplerCall) {
+  uint64_t deadline=0;clock_interval_to_deadline((display13SamplerTicks<6||patternActive)?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
  }
 }
@@ -14254,6 +14290,8 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
    if(checkKernelArgument("-wex-panel-noassr"))display13NoASSRFn=&XE::display13PanelNoASSR;
    display13BLProbe=checkKernelArgument("-wex-panel-blprobe");
    display13NoGamma=checkKernelArgument("-wex-panel-nogamma");
+   display13Pattern=checkKernelArgument("-wex-panel-pattern");
+   if(display13Pattern){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13PatternStartNs);}
    if(display13BLProbe){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13BLProbeStartNs);}
    if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
    display13SamplerCall=thread_call_allocate(display13SamplerTick,nullptr);
