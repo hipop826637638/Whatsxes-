@@ -14119,7 +14119,14 @@ static bool display13NoGamma {};static uint32_t display13NoGammaCount {};
 // pipe output once WindowServer runs, independent of surface contents.
 static bool display13Pattern {};static uint64_t display13PatternStartNs {};
 static uint32_t display13PatternSaved[2] {};static bool display13PatternHaveSaved {},display13PatternDone {};
-static uint32_t display13PatternStep() {
+// Opt-in -wex-panel-fix2 (timed, after light-up): 60 s clear PIPE_MISC
+// bit 23 (HDR precision mode; firmware leaves it clear) and keep it clear;
+// 100 s switch the sink from LINK_BW_SET to eDP 1.4 rate select (0x100=0,
+// 0x115=index of the active rate in 0x010-0x01F), as firmware/Linux do on
+// eDP 1.4+ panels that publish a rate table. Records WEXPanelFix2.
+static bool display13Fix2 {},display13Fix2RateDone {};static uint64_t display13Fix2StartNs {};
+static uint32_t display13Fix2Rec[12] {};
+
  if(!display13Pattern || !display13PatternStartNs || display13PatternDone)return 0;
  uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);
  const uint64_t elapsed=(ns-display13PatternStartNs)/1000000000ULL;
@@ -14202,6 +14209,7 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
  display13BLProbeTick();
  display13PatternTick();
  display13TimingCapture("WEXPanelTimingLive",false);
+ if(display13Fix2)XE::display13PanelFix2();
  if(display13NoGamma && c.map && c.map->getVirtualAddress() && c.map->getLength()>=0x1000000) {
   auto mode=reinterpret_cast<volatile uint32_t *>(c.map->getVirtualAddress()+0x4A480);
   const uint32_t before=*mode;
@@ -14209,7 +14217,7 @@ static void display13SamplerTick(thread_call_param_t,thread_call_param_t) {
   uint32_t rec[4]={before,*mode,display13NoGammaCount,display13SamplerTicks};
   IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelNoGamma",rec,sizeof(rec));
  }
- const bool patternActive=display13Pattern && !display13PatternDone;
+ const bool patternActive=(display13Pattern && !display13PatternDone) || display13Fix2;
  if(++display13SamplerTicks<(patternActive?400U:(display13ProbeEnabled||display13NoASSRFn||display13BLProbe||display13NoGamma)?120U:60U) && display13SamplerCall) {
   uint64_t deadline=0;clock_interval_to_deadline((display13SamplerTicks<6||patternActive)?1:5,kSecondScale,&deadline);
   thread_call_enter_delayed(display13SamplerCall,deadline);
@@ -14315,6 +14323,8 @@ uint32_t XE::wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,con
    display13BLProbe=checkKernelArgument("-wex-panel-blprobe");
    display13NoGamma=checkKernelArgument("-wex-panel-nogamma");
    display13Pattern=checkKernelArgument("-wex-panel-pattern");
+   display13Fix2=checkKernelArgument("-wex-panel-fix2");
+   if(display13Fix2){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13Fix2StartNs);}
    if(display13Pattern){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13PatternStartNs);}
    if(display13BLProbe){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13BLProbeStartNs);}
    if(display13ProbeEnabled){uint64_t t=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&display13ProbeStartNs);display13ProbeTimedFn=&XE::display13PanelProbeTimed;}
@@ -14620,6 +14630,54 @@ void XE::display13PanelNoASSR() {
  if((tpBefore&0x40) || (sinkBefore&1))++display13NoASSRCount;
  uint32_t rec[7]={tpBefore,*reg,sinkBefore,sinkAfter,w,display13NoASSRCount,aux};
  IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelNoASSR",rec,sizeof(rec));
+}
+void XE::display13PanelFix2() {
+ auto s=callbackXE;auto &c=display13FBPower;
+ if(!display13Fix2StartNs || !s->display13FramebufferRequested || !s->adlnOutputWiring.panel || !c.lock || !c.map ||
+    !c.map->getVirtualAddress() || c.map->getLength()<0x1000000)return;
+ uint64_t t=0,ns=0;clock_get_uptime(&t);absolutetime_to_nanoseconds(t,&ns);
+ const uint64_t elapsed=(ns-display13Fix2StartNs)/1000000000ULL;
+ auto &r=display13Fix2Rec;r[0]=uint32_t(elapsed);
+ const auto va=c.map->getVirtualAddress();
+ auto misc=reinterpret_cast<volatile uint32_t *>(va+0x70030);
+ if(elapsed>=60) {
+  const uint32_t m=*misc;
+  if(m!=UINT32_MAX && (m&0x800000U)){*misc=m&~0x800000U;++r[1];r[2]=m;}
+  r[3]=*misc;r[4]=1;
+ }
+ if(elapsed>=100 && !display13Fix2RateDone) {
+  display13Fix2RateDone=true;r[4]=2;
+  const auto ddi=s->firmwarePorts.panel.ddi;
+  auto port=ddi<2 && s->tglPortByDDI ? reinterpret_cast<OSObject *(*)(uint32_t)>(s->tglPortByDDI)(ddi) : nullptr;
+  if(port) {
+   bool pg=false,aux=false;
+   port->retain();
+   IOLockLock(c.lock);
+   {Display13FBPanelIO io{c.map};pg=display13PanelPowerReference(true);if(pg)aux=c.bridge.getAUX(io,ddi).status==Display13Power::Status::Complete;}
+   IOLockUnlock(c.lock);
+   if(aux) {
+    uint8_t rates[16] {},bw=0xFF,sel=0xFF;
+    wrapDisplay13ReadAUX(port,0x010,rates,16);wrapDisplay13ReadAUX(port,0x100,&bw,1);wrapDisplay13ReadAUX(port,0x115,&sel,1);
+    memcpy(&r[5],rates,16);r[9]=bw|(uint32_t(sel)<<8);
+    // bw is in 0.27 Gbps units (HBR2 0x14 = 540000 in Linux link-rate
+    // units); table entries are 200 kHz units: entry*20 = rate, so 27000.
+    const uint32_t want=uint32_t(bw)*1350U;uint32_t index=0xFF;
+    for(unsigned i=0;i<8;++i){const uint32_t v=rates[2*i]|(uint32_t(rates[2*i+1])<<8);if(!v)break;if(v==want){index=i;break;}}
+    r[10]=index|(want<<8);
+    if(index!=0xFF && bw!=0) {
+     uint8_t z=0,ix=uint8_t(index);
+     uint32_t w1=wrapDisplay13WriteAUX(port,0x115,&ix,1);uint32_t w2=wrapDisplay13WriteAUX(port,0x100,&z,1);
+     uint8_t bw2=0xFF,sel2=0xFF;wrapDisplay13ReadAUX(port,0x100,&bw2,1);wrapDisplay13ReadAUX(port,0x115,&sel2,1);
+     r[11]=(w1&0xFF)|((w2&0xFF)<<8)|(uint32_t(bw2)<<16)|(uint32_t(sel2)<<24);r[4]=3;
+    }
+   }
+   IOLockLock(c.lock);
+   {Display13FBPanelIO io{c.map};if(aux)c.bridge.putAUX(io,ddi);if(pg)display13PanelPowerReference(false);}
+   IOLockUnlock(c.lock);
+   port->release();
+  }
+ }
+ IORegistryEntry::getRegistryRoot()->setProperty("WEXPanelFix2",r,sizeof(display13Fix2Rec));
 }
 uint32_t XE::wrapDisplay13BacklightAudit(void *controller,uint32_t brightness) {
  const auto result=wrapADLSPanelBacklight(controller,brightness);
