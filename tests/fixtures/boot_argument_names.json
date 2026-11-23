@@ -160,5 +160,6 @@
   "-wex-norc": [],
   "-wex-panel-nogamma": [],
   "-wex-panel-pattern": [],
-  "-wex-panel-fix2": []
+  "-wex-panel-fix2": [],
+  "-wex-panel-nodsc": []
 }
