@@ -1,5 +1,41 @@
 # Changelog
 
+## 0.8.6
+
+Use with WhateverXe Graphics 0.4.5.
+
+### Added
+
+- On Tiger Lake laptops whose internal eDP display goes dark when macOS takes over from the boot screen, `-wex-tgl-edp-keep` lets you try keeping the firmware display mode. This can retain a lower color depth.
+
+### Fixed
+
+- Fix a timeout when re-establishing the internal eDP link after display sleep.
+- Fix incorrect color-depth signaling when macOS reuses an existing eDP or DisplayPort link.
+- Fix an unnecessary delay during DisplayPort link training on displays that advertise extended receiver capabilities.
+- Fix a hardware video processing stall that could occur if interrupt retry setup failed at startup.
+
+## 0.8.5
+
+Update WhateverXe to 0.8.5 and keep WhateverXe Graphics at 0.4.5.
+
+### Fixed
+
+- Fix an issue in WhateverXe 0.8.4 that prevented Safari from loading a library required for hardware video decoding with WhateverXe Graphics 0.4.5.
+- Fix a startup issue on some laptops where the internal display stayed black or graphics acceleration was unavailable after the firmware handed over the display.
+
+## 0.8.4
+
+Update WhateverXe and [WhateverXe Graphics](https://github.com/b00t0x/WhateverXe-Graphics/releases) together.
+
+### Fixed
+
+- Fix an issue on some laptops where the internal display worked but Metal and hardware video acceleration were unavailable.
+- Fix a framebuffer allocation failure that could leave the display blank at startup when the image ends partway through a memory page, as on some 2880×1800 panels.
+- Fix display startup on supported Alder Lake and Raptor Lake systems where an unused USB-C display port could block the boot display.
+- Fix an eDP handoff failure where the panel could keep display stream compression enabled when switching to an uncompressed link.
+- Prevent a kernel panic when the driver cannot identify a video engine interrupt in time.
+
 ## 0.8.3
 
 ### Added

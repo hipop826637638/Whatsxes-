@@ -20,7 +20,10 @@ code=r'''
 #include "kern_alderlake_s.hpp"
 #include "firmware_panel_fixture.hpp"
 bool auditEnabled=false;
-bool checkKernelArgument(const char *arg){assert(!strcmp(arg,"-wex-dsi-audit"));return auditEnabled;}
+bool checkKernelArgument(const char *arg){
+ if(!strcmp(arg,"-wex-panel0"))return false;
+ if(!strcmp(arg,"-wex-panel-aux"))return false;
+ assert(!strcmp(arg,"-wex-dsi-audit"));return auditEnabled;}
 #define OSDynamicCast(type,ptr) (ptr)
 constexpr unsigned kIODirectionIn=1,kIOMapReadOnly=2;
 struct OSData {

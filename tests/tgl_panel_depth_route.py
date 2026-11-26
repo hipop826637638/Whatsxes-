@@ -38,6 +38,8 @@ using mach_vm_address_t=uintptr_t;
 unsigned calls=0,published=0;uint64_t record[5];
 struct Root {void setProperty(const char *,void *p,size_t n){assert(n==40);memcpy(record,p,n);++published;}} root;
 struct IORegistryEntry {static Root *getRegistryRoot(){return &root;}};
+static bool force8bpc=false;
+bool checkKernelArgument(const char *a){return force8bpc && !strcmp(a,"-wex-panel-8bpc");}
 void *tglAUXLock=&root;
 void IOSimpleLockLock(void *){} void IOSimpleLockUnlock(void *){}
 struct Ports {struct Port {bool internal(){return true;}bool dp(){return true;}} port[2];unsigned present=1;bool valid(){return true;}};

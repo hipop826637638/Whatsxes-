@@ -17,7 +17,12 @@ template<class IO> bool probe(IO &io,Caps &c) {
  if(!c.set && !(caps[2]&1))return false;
  if(!c.set)return true;
  uint8_t bits=0;if(!io.read(0x724,&bits,1))return false;bits&=31;
- if(!bits || bits>16 || (!c.wide && bits>8))return false;
+ // PWMGEN_BIT_COUNT describes a sink PWM generator. An AUX-level sink
+ // without one may report 0 (Samsung ATNA60YV02: 0x702=0xA6, 0x724=0);
+ // the level width then follows BYTE_COUNT, as in Linux
+ // drm_edp_backlight_probe_max().
+ if(!bits){c.maximum=c.wide?0xFFFFU:0xFFU;return true;}
+ if(bits>16 || (!c.wide && bits>8))return false;
  c.maximum=(1U<<bits)-1;return true;
 }
 template<class IO> bool enable(IO &io,bool value) {

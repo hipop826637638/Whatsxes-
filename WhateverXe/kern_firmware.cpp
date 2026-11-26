@@ -36,19 +36,23 @@ void XE::captureFirmware(IOPCIDevice *pci,const XELP::Profile &profile) {
                 pci->setProperty("TGLASLS",asls,32);
                 publishBytes(pci,"TGLOpRegion",bytes,8192);
                 const auto identity=XELP::VBT::panelEDID(bytes,8192);
+                // Opt-in only: -wex-panel0 selects VBT panel profile 0 when the
+                // firmware reports 0xFF and supplies no usable EDID identity.
+                const uint8_t overrideType=checkKernelArgument("-wex-panel0") ? 0 : 0xff;
+                if(overrideType<16)pci->setProperty("WEXPanelTypeOverride",uint32_t(overrideType),32);
                 if(region.address) {
                     auto vbtMemory=IOMemoryDescriptor::withPhysicalAddress(region.address,region.bytes,kIODirectionIn);
                     auto vbtMap=vbtMemory ? vbtMemory->map(kIOMapReadOnly) : nullptr;
                     if(vbtMap && vbtMap->getVirtualAddress() && vbtMap->getLength()>=region.bytes) {
                         const auto data=reinterpret_cast<const void *>(vbtMap->getVirtualAddress());
-                        firmwarePorts=XELP::VBT::parse(data,region.bytes,profile.family,identity);
+                        firmwarePorts=XELP::VBT::parse(data,region.bytes,profile.family,identity,overrideType);
                         if(firmwarePorts.valid()){source=2;publishBytes(pci,"TGLVBT",data,firmwarePorts.bytes);}
                     }
                     if(vbtMap)vbtMap->release();
                     if(vbtMemory)vbtMemory->release();
                 }
                 if(!firmwarePorts.valid()) {
-                    const auto embedded=XELP::VBT::parse(bytes+0x400,region.inlineBytes,profile.family,identity);
+                    const auto embedded=XELP::VBT::parse(bytes+0x400,region.inlineBytes,profile.family,identity,overrideType);
                     if(embedded.valid()) {
                         firmwarePorts=embedded;source=1;
                         publishBytes(pci,"TGLVBT",bytes+0x400,firmwarePorts.bytes);
@@ -66,6 +70,13 @@ void XE::captureFirmware(IOPCIDevice *pci,const XELP::Profile &profile) {
     pci->setProperty("WhateverXeFirmwarePorts",summary,sizeof(summary));
     pci->setProperty("WhateverXeFirmwareChecksum",firmwarePorts.checksum,32);
     pci->setProperty("WhateverXeFirmwarePortRecords",firmwarePorts.port,sizeof(firmwarePorts.port));
+    // Opt-in only: -wex-panel-aux drives an admitted internal panel through
+    // VESA DPCD brightness/enable (as for VBT interface 5) instead of PCH
+    // PWM. Some OLED panels report PWM in VBT but ignore the PWM signal.
+    if(firmwarePorts.panel.valid && checkKernelArgument("-wex-panel-aux")) {
+        firmwarePorts.panel.pwmPresent=false;
+        pci->setProperty("WEXPanelAUXOverride",1U,32);
+    }
     const auto &panel=firmwarePorts.panel;
     uint32_t panelFacts[]={panel.valid,panel.type,panel.ddi,panel.lowSwing,panel.hobl};
     pci->setProperty("WhateverXeFirmwarePanel",panelFacts,sizeof(panelFacts));

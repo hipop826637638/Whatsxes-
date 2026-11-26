@@ -94,6 +94,10 @@ private:
     static bool rejectADLPStart(IOService *,IOService *);
  XELP::DisplayContract::Mask display12Available() const;
  XELP::DisplayContract::Mask display13Available() const;
+ bool display13PortReady(unsigned ddi,bool boot=false) const;
+ bool display13HPDAllowed(void *controller,unsigned ddi) const;
+ static void wrapDisplay13Hotplug(void *controller,unsigned ddi,unsigned mode);
+ static void wrapDisplay13ShortPulse(void *controller,unsigned ddi,unsigned mode);
 	// Do not inline either helper into the small kext-load dispatcher.
 	__attribute__((noinline)) bool processAlderLakeNLoadOnly(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
 	__attribute__((noinline)) bool processAlderLakeNRejectedAccelerator(KernelPatcher &patcher, size_t index, mach_vm_address_t address, size_t size);
@@ -117,6 +121,7 @@ private:
     bool display12SmallGTDetected {},display12SmallGTReady {};
     bool tglGT2Detected {},tglGT2Ready {};
     XELP::GTResources tglGT2Resources;
+    bool mobilePrimaryVCS2 {};
     bool adlsDisplaySelected {},adlsDisplayHooksReady {};
     bool adlsPortInitReady {},tglHPDHookReady {};
     bool adlsPLLTableReady {},adlsClockReady {},adlsPowerReady {},adlsPanelPWMReady {};
@@ -125,11 +130,35 @@ private:
  static bool adlsPanelPWMTarget(void *controller,void *&access,void *&power);
  static bool adlsCapturePanelPWM(void *controller);
  static uint32_t wrapADLSLightUpEDP(void *controller,void *fb,void *path,const void *timing);
+ static uint32_t wrapDisplay13EDPLightAudit(void *controller,void *fb,void *path,const void *timing);
+ static uint32_t wrapDisplay13BacklightAudit(void *controller,uint32_t brightness);
+ static void display13PanelSnapshot(uint32_t brightness,uint32_t result);
+ static void display13PanelHDR(uint32_t brightness);
+ static void display13PanelProbeApply(void *port,uint32_t step);
+ static void display13PanelProbeTimed();
+ static void display13PanelStateCapture(uint8_t *dpcd,uint32_t *mmio);
+ static void display13PanelNoASSR();
+ static void display13PanelFix2();
  static uint32_t wrapADLSPanelBacklight(void *controller,uint32_t brightness);
  static void wrapADLSPanelPWMEnable(void *access);
     mach_vm_address_t orgADLSPowerPG {};
     static uint8_t *adlsPowerTarget(void *power);
     static void wrapADLSPowerPG(void *power,bool enable,uint32_t requested);
+    __attribute__((noinline)) void routeTGLDisplayRetention(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size);
+    struct TGLDisplayRetention {
+        void *controller {};
+        uint64_t nativeHz {};
+        uint32_t pll {}, control {}, reference {}, requestedSlices {};
+    } tglDisplayRetention;
+    mach_vm_address_t orgTGLEnableHWDC6 {}, orgTGLDisableHWDC6 {};
+    IOLock *tglDC6Lock {};
+    bool tglDC6Ready {};
+    mach_vm_address_t tglDisplayVoltageLevel {}, tglCDClockTable {};
+    static void wrapTGLEnableHWDC6(void *controller);
+    static void wrapTGLDisableHWDC6(void *controller);
+    void *tglDisplayRetentionAccess(void *controller);
+    void saveTGLDisplayPower(void *controller);
+    void restoreTGLDisplayPower(void *controller);
     mach_vm_address_t orgComboEnableClocks {};
     static bool adlsClockTarget(void *controller,void *port,void *otherPort);
     mach_vm_address_t framebufferClockImage {};
@@ -217,6 +246,7 @@ private:
  mach_vm_address_t orgDisplay13TrainingPattern {},orgDisplay13SignalLevels {};
  mach_vm_address_t orgDisplay13EnablePort {},orgDisplay13DisablePort {};
  static bool display13MainLinkAUX(void *port,bool acquire,bool stopping=false);
+ static bool display13BootPanelDSCOff(void *port,unsigned ddi);
  static uint32_t wrapDisplay13EnablePort(void *port);
  static uint32_t wrapDisplay13DisablePort(void *port);
  bool processDisplay13FramebufferSST(KernelPatcher &,size_t,mach_vm_address_t,size_t);
@@ -236,11 +266,17 @@ private:
  static uint32_t wrapDisplay13TrainingPattern(void *path,uint32_t pattern);
  static uint32_t wrapDisplay13SignalLevels(void *port,uint32_t swing,uint32_t emphasis,void *overrideConfig);
 	mach_vm_address_t xelpProviderProbe {},xelpProviderConfigureProbe {};
- bool display13DPAltProbeReady {},display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {},display13FBDPHooksReady {};
+ bool display13DPAltProbeReady {},display13DPProbeReady {},display13TCProbeReady {},display13TCDPProbeReady {};
  bool adlpDisplaySelected {};
  bool adlpRenderRequested {};
  Display13OutputWiring display13BoardWiring(IOService *);
+ unsigned display13PreparedDDI {UINT32_MAX};
  bool prepareDisplay13BootScanout(IOPCIDevice *);
+ mach_vm_address_t orgBootModeCompare {}, bootModeCaller {}, orgBootResourceInit {};
+ static bool wrapBootModeCompare(void *,void *,void *,void *,const void *,void *);
+ static bool prepareDisplay13RGBMode(void *,void *,void *,uint32_t *,const void *,bool retained);
+ static bool selectBootMode(void *,void *,void *,void *,const void *,void *);
+ static void *wrapBootResourceInit(void *,uint32_t,void *);
     bool xelpBindProbe(void *controller);
 	bool display13FBTopologyHooksReady {false};
     bool display13DSIModeHooksReady {};
@@ -345,6 +381,7 @@ private:
 	uint64_t adlnPlatform[0x1C0/8] {};
 	IOService *adlnTopologyController {};
 	mach_vm_address_t orgAlderLakeNGetOSInformation {},orgAlderLakeNPortState {};
+ mach_vm_address_t orgDisplay13Hotplug {},orgDisplay13ShortPulse {};
 	bool display13FBMemoryHooksReady {false};
 	bool display13FBGTTHooksReady {false};
 	mach_vm_address_t orgDisplay13FBMemoryInit {};
@@ -376,7 +413,7 @@ private:
 	mach_vm_address_t adlnScanoutDisableFB {};
 	mach_vm_address_t orgAlderLakeNSetupWorkLoop {};
 	__attribute__((noinline)) bool processDisplay13FramebufferOutput(KernelPatcher &patcher,size_t index,mach_vm_address_t address,size_t size);
-    bool display13FBTCHooksReady {};
+    bool display13FBTCHooksReady {},display13SharedModePatchFaulted {};
     mach_vm_address_t orgDisplay13TCMode {},display13TCBaseMode {},orgDisplay13TCEnableClocks {},orgDisplay13TCDisableClocks {};
     mach_vm_address_t orgDisplay13TCLightUp {},orgDisplay13TCSetMode {},display13TCNotify {};
     mach_vm_address_t display13TCFullClocks {},display13TCPlane {},display13TCScaler {},display13TCPipe {},display13TCPackets {};
@@ -388,6 +425,7 @@ private:
  mach_vm_address_t orgDisplay13DPPhyGating {},orgDisplay13DPLaneMask {},orgDisplay13DPPortWrite {},display13DPImage {};
  static uint32_t wrapDisplay13TCLightUp(void *,void *,void *,const void *);
     static uint32_t wrapDisplay13TCSetMode(void *,void *,const void *);
+    static uint32_t wrapDisplay13TCSetModeRepair(void *,void *,const void *);
     bool processDisplay13FramebufferTC(KernelPatcher &,size_t,mach_vm_address_t,size_t);
     static unsigned display13TCTarget(OSObject *,bool cleanup=false);
     static uint32_t wrapDisplay13TCMode(OSObject *,uint32_t);
@@ -518,6 +556,9 @@ private:
 	mach_vm_address_t orgTGLScanoutAllocate {}, orgTGLScanoutSetup {}, orgTGLPlaneUpdate {}, orgTGLAperture {};
 	mach_vm_address_t orgTGLPlaneSetup {}, orgTGLColorMode {}, orgTGLPixelInfo {};
 	mach_vm_address_t orgTGLModeTiming {};
+	mach_vm_address_t orgTGLRetainedMode {}, tglRetainedModeCaller {};
+	static bool selectTGLBootDepth(bool update, void *controller, void *fb, void *path, void *params, const void *timing, void *scaler);
+	static bool wrapTGLRetainedMode(void *, void *, void *, void *, const void *, void *);
 	bool tglPanelDepthReady {false};
  bool display13PanelPWMReady {},display13PanelPowerReady {},display13PanelProbeReady {};
  mach_vm_address_t orgDisplay13PanelPower {};
@@ -542,6 +583,7 @@ private:
  static void tglApplyPanelTiming(void *controller,bool apply);
  static void wrapTGLPanelConfig(void *controller,uint32_t config);
  static uint32_t wrapTGLPanelTiming(void *controller);
+	static bool prepareDisplay12RGBMode(void *controller,void *path,uint32_t *mode,bool retained);
 	static uint32_t tglPanelDepthPort(void *port);
 	static void wrapTGLModeTiming(void *controller,void *fb,void *timing);
 	mach_vm_address_t orgTGLGamma10 {}, orgTGLRegisterWrite {}, orgTGLFastRegisterWrite {};

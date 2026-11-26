@@ -115,6 +115,7 @@
     "-display13trace",
     "-n97displaytrace"
   ],
+  "-wex-tgl-edp-keep": [],
   "-wex-tgl-off": [
     "-igfxtgloff"
   ],
@@ -148,5 +149,18 @@
   "-wex-adlp-load-only": [],
   "-wex-display13-offline": [],
   "-wex-dsi-hdmi-test": [],
-  "-wex-dsi-power-test": []
+  "-wex-dsi-power-test": [],
+  "-wex-panel0": [],
+  "-wex-panel-aux": [],
+  "-wex-panel-hdr": [],
+  "-wex-panel-8bpc": [],
+  "-wex-panel-nodip": [],
+  "-wex-panel-probe": [],
+  "-wex-panel-noassr": [],
+  "-wex-panel-blprobe": [],
+  "-wex-norc": [],
+  "-wex-panel-nogamma": [],
+  "-wex-panel-pattern": [],
+  "-wex-panel-fix2": [],
+  "-wex-panel-nodsc": []
 }
